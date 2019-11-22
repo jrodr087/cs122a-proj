@@ -46,6 +46,7 @@ struct cpu
 	unsigned char a; //accumulator
 	unsigned char x; //indexing register x
 	unsigned char y; // indexing register y
+	unsigned char temp; //this is testing stuff for the spi
 	unsigned char instbuffer[3]; //buffer for instructions read from spi
 	unsigned char RAM[ramsize];//2KB internal ram
 	unsigned short pc; // program counter
@@ -73,6 +74,7 @@ void InitCpu(struct cpu* c){
 	c->instbuffer[0]=0;
 	c->instbuffer[1]=0;
 	c->instbuffer[2]=0;
+	c->temp = 0;
 	c->pc = 0;
 	c->clocks = 0;
 	c->state = init;
@@ -101,7 +103,12 @@ void WriteMemory(struct cpu *c, unsigned short pos, unsigned char val){
 	
 }
 void FetchInstruction(struct cpu* c){
-	
+	SPI_Transmit(FETCH);
+	SPI_Transmit(c->temp);
+	c->instbuffer[0] = SPI_ServantReceive();
+	c->instbuffer[1] = SPI_ServantReceive();
+	c->instbuffer[2] = SPI_ServantReceive();
+	c->temp++;
 }
 void RunInstruction(struct cpu* c){
 	FetchInstruction(c);
