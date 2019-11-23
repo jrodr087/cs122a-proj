@@ -50,6 +50,10 @@ struct cpu
 	unsigned char instbuffer[3]; //buffer for instructions read from spi
 	unsigned char RAM[ramsize];//2KB internal ram
 	unsigned short pc; // program counter
+	unsigned short playspeed;
+	unsigned short playadd;
+	unsigned short initadd;
+	
 	unsigned short clocks;
 	enum CPUStatus state;
 	struct apu apuObj;
@@ -75,9 +79,15 @@ void InitCpu(struct cpu* c){
 	c->instbuffer[1]=0;
 	c->instbuffer[2]=0;
 	c->temp = 0;
-	c->pc = 0;
+	c->initadd = SPI_ServantReceive();
+	c->initadd += SPI_ServantReceive() << 8;
+	c->playadd = SPI_ServantReceive();
+	c->playadd += SPI_ServantReceive() << 8;
+	c->playspeed = SPI_ServantReceive();
+	c->playspeed += SPI_ServantReceive() << 8;
+	c->pc = c->initadd;
 	c->clocks = 0;
-	c->state = init;
+	c->state = running;
 }
 unsigned char LoadFromBus(unsigned short pos){
 	//////should read a given address from the rpi
@@ -103,19 +113,44 @@ void WriteMemory(struct cpu *c, unsigned short pos, unsigned char val){
 	
 }
 void FetchInstruction(struct cpu* c){
+	PORTC = 0xFF;
 	SPI_Transmit(FETCH);
-	SPI_Transmit(c->temp);
+	PORTC = 0xFE;
+	SPI_Transmit((c->pc >>8) & 0xFF);
+	PORTC = 0xFC;
+	SPI_Transmit(c->pc & 0xFF);
 	c->instbuffer[0] = SPI_ServantReceive();
+	PORTC = 0xF8;
 	c->instbuffer[1] = SPI_ServantReceive();
+	PORTC = 0xF0;
 	c->instbuffer[2] = SPI_ServantReceive();
+	PORTC = 0xE0;
 	c->temp++;
+	PORTC = c->instbuffer[0];
 }
 void RunInstruction(struct cpu* c){
 	FetchInstruction(c);
-	switch (c->instbuffer[0]){
+	switch (c->instbuffer[0]){//implementing this sucks
 		case 0x00: //BRK impl
+			c->pc+= 2;
+			break;
+		case 0x01://OR oper,x
+			c->pc+= 2;
+			break;
+		case 0x05://OR oper
+			c->pc+= 2;
+			break;
+		case 0x06://ASL zpg
+			c->pc+= 2;
+			break;
+		case 0x08://PHP impl
+			c->pc+= 1;
+			break;
+		case 0x09://OR #oper
+			c->pc+= 2;
 			break;
 		default://nop
+			c->pc+= 2;
 			break;
 	}
 }
