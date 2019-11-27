@@ -10,7 +10,6 @@
 #include "timer.h"
 #include "cpu.h"
 unsigned char currindex = 0;
-//unsigned char vals[255];
 void displayReceived(unsigned char rx){
 	unsigned char str[4];
 	str[3] = 0;
@@ -20,6 +19,11 @@ void displayReceived(unsigned char rx){
 	}
 	LCD_DisplayString(1, &str);
 }
+void InitPWM(){
+	TCCR0A = (1<<WGM00) | (1<<WGM01) | (1<<COM0A0);
+	TCCR0B = (1<<CS00);
+	DDRB|=(1<<DDB3);
+}
 
 int main(void)
 {
@@ -28,16 +32,18 @@ int main(void)
 	DDRA = 0xFF;
 	PORTC = 0x0F;
 	SPI_ServantInit();
-    LCD_init(); 
-	LCD_DisplayString(1,"test");
+  //  LCD_init(); 
+	//LCD_DisplayString(1,"test");
 	struct cpu c;
-	InitCpu(&c);
+	APUInit(&(c.a));
+	APUWrite(&(c.a),253,2); //440hz pulsegen init
+	//InitCpu(&c);
 	//unsigned char rx;
 	//srand(1);
 	//displayReceived(0xAB);
     while (1) 
     {
-		TickCpu(&c);
+		SampleAPU(&(c.a));
     }
 }
 

@@ -24,6 +24,7 @@
 #define READ 0x02 //this is the spi instruction to read an address from rpi
 #define WRITE 0x03 //this is the spi instruction to write to an address from rpi
 #define INITEMU 0x04 //this is the spi instruction to tell the rpi to init the emulation
+#define FUNCTIONBUFFSIZE 256 //size of the buffers for the init and play functions
 enum CPUStatus {
 	init,
 	waitrpi,
@@ -43,12 +44,15 @@ struct cpu
 	Z:  zero flag set when an arithmetic operation is loaded with the value 0 and clear otherwise
 	C: carry flag used in additions and subtractions as a 9th bit
 	*/
-	unsigned char a; //accumulator
+	unsigned char acc; //accumulator
 	unsigned char x; //indexing register x
 	unsigned char y; // indexing register y
 	unsigned char temp; //this is testing stuff for the spi
+	
 	unsigned char instbuffer[3]; //buffer for instructions read from spi
 	unsigned char RAM[ramsize];//2KB internal ram
+	unsigned char initbuff[FUNCTIONBUFFSIZE];//internal buffer for the init function
+	unsigned char playbuff[FUNCTIONBUFFSIZE];//internal buffer for the play function
 	unsigned short pc; // program counter
 	unsigned short playspeed;
 	unsigned short playadd;
@@ -56,7 +60,7 @@ struct cpu
 	
 	unsigned short clocks;
 	enum CPUStatus state;
-	struct apu apuObj;
+	struct apu a;
 };
 void PushStack(struct cpu* c, unsigned char val){
 	c->s--;
@@ -72,13 +76,12 @@ unsigned char PeekStack(struct cpu* c){
 void InitCpu(struct cpu* c){
 	c->s = 0xFF;//stack grows downwards
 	c->p = 0;
-	c->a = 0;
+	c->acc = 0;
 	c->x = 0;
 	c->y = 0;
 	c->instbuffer[0]=0;
 	c->instbuffer[1]=0;
 	c->instbuffer[2]=0;
-	c->temp = 0;
 	c->initadd = SPI_ServantReceive();
 	c->initadd += SPI_ServantReceive() << 8;
 	c->playadd = SPI_ServantReceive();
@@ -102,31 +105,70 @@ unsigned char ReadMemory(struct cpu *c, unsigned short pos){
 		pos = pos % ramsize;
 		return c->RAM[pos];
 	}
+	else if (pos >= c->playadd && pos < c->playadd+256){
+		return c->playbuff[pos-c->playadd];	
+	}
+	else if (pos >= c->initadd && pos < c->initadd+256){
+		return c->initbuff[pos-c->initadd];
+	}
 	return 0x00;
 }
-void WriteMemory(struct cpu *c, unsigned short pos, unsigned char val){
-	if (pos <= mirrorhead){
+void PopulateBuffers(struct cpu *c){//fills the play and init buffers so we dont have to spi so much
+	c->pc = c->initadd;
+	for (unsigned char i = 0; i < 255;i++){
+		SPI_Transmit(READ);
+		SPI_Transmit((c->pc >>8) & 0xFF);
+		SPI_Transmit(c->pc & 0xFF);
+		c->initbuff[i] = SPI_ServantReceive();
+		c->pc++;
+	}//get the first 255 bytes for the init buffer
+	SPI_Transmit(READ);
+	SPI_Transmit((c->pc >>8) & 0xFF);
+	SPI_Transmit(c->pc & 0xFF);
+	c->initbuff[255] = SPI_ServantReceive();//gets the last byte for the buffer
+	c->pc = c->playadd;
+	for (unsigned char i = 0; i < 255;i++){
+		SPI_Transmit(READ);
+		SPI_Transmit((c->pc >>8) & 0xFF);
+		SPI_Transmit(c->pc & 0xFF);
+		c->playbuff[i] = SPI_ServantReceive();
+		c->pc++;
+	}//get the first 255 bytes for the play buffer
+	SPI_Transmit(READ);
+	SPI_Transmit((c->pc >>8) & 0xFF);
+	SPI_Transmit(c->pc & 0xFF);
+	c->initbuff[255] = SPI_ServantReceive();//gets the last byte
+}
+void WriteMemory(struct cpu *c, unsigned short pos, unsigned char val){//writes to certain memory addresses
+	if (pos <= mirrorhead){//write to wam
 		pos = pos % ramsize;
 		c->RAM[pos] = val;
 		return;
 	}
+	if (pos >= 0x4000 && pos <= 0x4017){//apu write
+		APUWrite(&(c->a),val,pos & 0xFF);
+	}
 	
 }
 void FetchInstruction(struct cpu* c){
-	PORTC = 0xFF;
+	if (c->pc >= c->initadd && c->pc < c->initadd+FUNCTIONBUFFSIZE-3){
+		c->instbuffer[0] = c->initbuff[c->pc-c->initadd];
+		c->instbuffer[1] = c->initbuff[c->pc-c->initadd+1];
+		c->instbuffer[2] = c->initbuff[c->pc-c->initadd+2];
+		return;
+	}
+	if (c->pc >= c->playadd && c->pc < c->playadd+FUNCTIONBUFFSIZE-3){
+		c->instbuffer[0] = c->initbuff[c->pc-c->playadd];
+		c->instbuffer[1] = c->initbuff[c->pc-c->playadd+1];
+		c->instbuffer[2] = c->initbuff[c->pc-c->playadd+2];
+		return;
+	}
 	SPI_Transmit(FETCH);
-	PORTC = 0xFE;
 	SPI_Transmit((c->pc >>8) & 0xFF);
-	PORTC = 0xFC;
 	SPI_Transmit(c->pc & 0xFF);
 	c->instbuffer[0] = SPI_ServantReceive();
-	PORTC = 0xF8;
 	c->instbuffer[1] = SPI_ServantReceive();
-	PORTC = 0xF0;
 	c->instbuffer[2] = SPI_ServantReceive();
-	PORTC = 0xE0;
-	c->temp++;
-	PORTC = c->instbuffer[0];
 }
 void RunInstruction(struct cpu* c){
 	FetchInstruction(c);
@@ -164,6 +206,7 @@ void TickCpu(struct cpu* c){
 			break;
 		case init:
 			InitCpu(c);
+			PopulateBuffers(c);
 			c->state = waitrpi;
 			break;
 		case running:

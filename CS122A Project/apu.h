@@ -8,19 +8,36 @@
 
 #ifndef APU_H_
 #define APU_H_
+#include "trigintlib/trigint.h"
 #define apuregsize 0x0018
 #define aputop 0x4000
+#define timermask 0x20 //bitmask for the length counter halt
+#define CPUCLOCK 1789773
+#define SAMPLERATE 8192 //8.192khz sample rate
+#define ANGLEPERSTEP 2 //equivalent to TRIGINT_ANGLES_PER_CYCLE/SAMPLERATE
+#define harmonics 4 //how many additions of sine do we want
 
 struct pulsegen{
-	unsigned char regs[4]
+	unsigned char regs[4];
 };
+
 struct apu{
 	unsigned char ce;//channel enable and length counter
-	unsigned char framecounter;//framecounter
+	unsigned char framecounter;//framecounter, not actually emulating it clock accurate just using it to count the 4 steps
+	trigint_angle_t currangle;//current angle for the sine
 	struct pulsegen pulse1;
 	struct pulsegen pulse2;
 	
 };
+void APUInit(struct apu *a){
+	a->ce = 0;
+	a->framecounter = 0;
+	a->currangle = 0;
+	for (unsigned char i = 0; i < 4; i++){
+		a->pulse1.regs[i] = 0;
+		a->pulse2.regs[i] = 0;
+	}
+}
 void APUWrite(struct apu *a, unsigned char val, unsigned char reg){
 	if (reg < 4){//pulse wave generator 1
 		a->pulse1.regs[reg] = val;
@@ -39,4 +56,30 @@ void APUWrite(struct apu *a, unsigned char val, unsigned char reg){
 	}
 }
 
+void APUFrameStep(struct apu *a){//should be run at 240hz clock
+	if (a->framecounter == 0x03){a->framecounter= 0;}//after the 4th step we loop back to 0
+	else{a->framecounter++;}//increment frame counter
+	if (a->framecounter%2 == 0){//every second frame increment
+		//clock length counters and sweep units
+	}
+	//clock envelopes and triangle linear counter
+	if (!(a->pulse1.regs[0] & timermask)){//if we arent halting pulse1's timer
+		//decrement lenght counter
+	}
+		
+}
+unsigned char SampleAPU(struct apu *a){
+	unsigned short t = ((a->pulse1.regs[3] & 0x07) << 8) + a->pulse1.regs[2];//returns the timer
+	unsigned short f = CPUCLOCK/(16* (t+1));//magic calculation im getting off of http://wiki.nesdev.com/w/index.php/APU_Misc
+	unsigned char angleinc = f*ANGLEPERSTEP;//this will be off slightly probably
+	a->currangle += angleinc;
+	signed char amp = 0;
+	for (unsigned char i = 0; i < harmonics; i++){
+		trigint_angle_t angle = a->currangle*(1+(i*2));
+		angle = angle & TRIGINT_ANGLE_MAX;
+		signed char curramp = trigint_sin8(angle)/(1+(i*2));
+		amp += curramp;
+	}
+	return amp;
+}
 #endif /* APU_H_ */
