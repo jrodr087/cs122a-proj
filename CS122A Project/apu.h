@@ -15,7 +15,7 @@
 #define CPUCLOCK 1789773
 #define SAMPLERATE 8192 //8.192khz sample rate
 #define ANGLEPERSTEP 2 //equivalent to TRIGINT_ANGLES_PER_CYCLE/SAMPLERATE
-#define harmonics 4 //how many additions of sine do we want
+#define harmonics 1 //how many additions of sine do we want
 
 struct pulsegen{
 	unsigned char regs[4];
@@ -71,14 +71,24 @@ void APUFrameStep(struct apu *a){//should be run at 240hz clock
 unsigned char SampleAPU(struct apu *a){
 	unsigned short t = ((a->pulse1.regs[3] & 0x07) << 8) + a->pulse1.regs[2];//returns the timer
 	unsigned short f = CPUCLOCK/(16* (t+1));//magic calculation im getting off of http://wiki.nesdev.com/w/index.php/APU_Misc
-	unsigned char angleinc = f*ANGLEPERSTEP;//this will be off slightly probably
+	unsigned short angleinc = f*ANGLEPERSTEP;//this will be off slightly probably
 	a->currangle += angleinc;
-	signed char amp = 0;
+	unsigned char amp = 128;
 	for (unsigned char i = 0; i < harmonics; i++){
-		trigint_angle_t angle = a->currangle*(1+(i*2));
+		unsigned char harm = (i*2)+1;
+		trigint_angle_t angle = a->currangle*(harm);
 		angle = angle & TRIGINT_ANGLE_MAX;
-		signed char curramp = trigint_sin8(angle)/(1+(i*2));
-		amp += curramp;
+		unsigned char tempamp = trigint_sin8u(angle);
+		if (tempamp < 128){
+			tempamp = (128 - tempamp);
+			tempamp /= harm;
+			amp -= tempamp;
+		}
+		else{
+			tempamp = tempamp - 128;
+			tempamp /= harm;
+			amp += tempamp;
+		}
 	}
 	return amp;
 }

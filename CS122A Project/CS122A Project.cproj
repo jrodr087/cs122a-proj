@@ -153,6 +153,33 @@
     <Compile Include="timer.h">
       <SubType>compile</SubType>
     </Compile>
+    <Compile Include="trigintlib\trigint.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="trigintlib\trigint_conversions.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="trigintlib\trigint_conversions.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="trigintlib\trigint_sin16.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="trigintlib\trigint_sin16.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="trigintlib\trigint_sin8.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="trigintlib\trigint_sin8.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="trigintlib\trigint_types.h">
+      <SubType>compile</SubType>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="trigintlib" />
   </ItemGroup>
   <Import Project="$(AVRSTUDIO_EXE_PATH)\\Vs\\Compiler.targets" />
 </Project>

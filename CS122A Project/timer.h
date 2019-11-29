@@ -21,14 +21,14 @@ void TimerSet(unsigned long M) {
 
 void TimerOn() {
 	// AVR timer/counter controller register TCCR1
-	TCCR1B 	= 0x0B;	// bit3 = 1: CTC mode (clear timer on compare)
+	TCCR1B 	= 0x0A;	// bit3 = 1: CTC mode (clear timer on compare)
 					// bit2bit1bit0=011: prescaler /64
 					// 00001011: 0x0B
 					// SO, 8 MHz clock or 8,000,000 /64 = 125,000 ticks/s
 					// Thus, TCNT1 register will count at 125,000 ticks/s
 
 	// AVR output compare register OCR1A.
-	OCR1A 	= 125;	// Timer interrupt will be generated when TCNT1==OCR1A
+	OCR1A 	= 122;	// Timer interrupt will be generated when TCNT1==OCR1A
 					// We want a 1 ms tick. 0.001 s * 125,000 ticks/s = 125
 					// So when TCNT1 register equals 125,
 					// 1 ms has passed. Thus, we compare to 125.
@@ -57,11 +57,6 @@ void TimerISR() {
 // In our approach, the C programmer does not touch this ISR, but rather TimerISR()
 ISR(TIMER1_COMPA_vect)
 {
-	// CPU automatically calls when TCNT0 == OCR0 (every 1 ms per TimerOn settings)
-	_avr_timer_cntcurr--; 			// Count down to 0 rather than up to TOP
-	if (_avr_timer_cntcurr == 0) { 	// results in a more efficient compare
 		TimerISR(); 				// Call the ISR that the user uses
-        _avr_timer_cntcurr = _avr_timer_M;
-    }
 }
 #endif //TIMER_H
