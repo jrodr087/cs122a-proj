@@ -25,6 +25,13 @@
 #define WRITE 0x03 //this is the spi instruction to write to an address from rpi
 #define INITEMU 0x04 //this is the spi instruction to tell the rpi to init the emulation
 #define FUNCTIONBUFFSIZE 256 //size of the buffers for the init and play functions
+#define CFLAG 0
+#define ZFLAG 1
+#define IFLAG 2
+#define DFLAG 3
+#define BFLAG 4
+#define VFLAG 6
+#define NFLAG 7
 enum CPUStatus {
 	init,
 	waitrpi,
@@ -33,7 +40,7 @@ enum CPUStatus {
 struct cpu
 {
 	unsigned char s; //stack pointer
-	unsigned char p; //status register
+	unsigned char status; //status register
 	/* bit of the status register in order starting from bit 7 down
 	N: negative flag set when any arithmetic ops give a negative
 	V: overflow flag set on a sign overflow on signed character operations clear otherwsise
@@ -44,7 +51,7 @@ struct cpu
 	Z:  zero flag set when an arithmetic operation is loaded with the value 0 and clear otherwise
 	C: carry flag used in additions and subtractions as a 9th bit
 	*/
-	unsigned char acc; //accumulator
+	signed char acc; //accumulator
 	unsigned char x; //indexing register x
 	unsigned char y; // indexing register y
 	unsigned char temp; //this is testing stuff for the spi
@@ -62,6 +69,14 @@ struct cpu
 	enum CPUStatus state;
 	struct apu a;
 };
+inline void SetPBit(struct cpu* tmp, unsigned char pos, unsigned char val){
+	if (val){
+		tmp->status |= ( 0x01 << pos);
+	}
+	else{
+		tmp->status &= ~(0x01 << pos);
+	}
+}
 void PushStack(struct cpu* c, unsigned char val){
 	c->s--;
 	c->RAM[c->s+stackhead] = val;
@@ -75,7 +90,7 @@ unsigned char PeekStack(struct cpu* c){
 }
 void InitCpu(struct cpu* c){
 	c->s = 0xFF;//stack grows downwards
-	c->p = 0;
+	c->status = 0;
 	c->acc = 0;
 	c->x = 0;
 	c->y = 0;
@@ -91,14 +106,6 @@ void InitCpu(struct cpu* c){
 	c->pc = c->initadd;
 	c->clocks = 0;
 	c->state = running;
-}
-unsigned char LoadFromBus(unsigned short pos){
-	//////should read a given address from the rpi
-	return 0x00;
-}
-void WriteToBus(unsigned short pos, unsigned char val){
-	////should write to a given address on the rpi
-	return;
 }
 unsigned char ReadMemory(struct cpu *c, unsigned short pos){
 	if (pos <= mirrorhead){
@@ -170,30 +177,503 @@ void FetchInstruction(struct cpu* c){
 	c->instbuffer[1] = SPI_ServantReceive();
 	c->instbuffer[2] = SPI_ServantReceive();
 }
+void ADCFunction(struct cpu* c, unsigned char inc){
+	unsigned short sum;
+	sum = c->acc + inc + ((c->status >> CFLAG) & 0x01);
+	if (sum >= 0xFF){
+		SetPBit(c,CFLAG,1);
+	}
+	else{
+		SetPBit(c,CFLAG,0);
+	}
+	if ((inc & 0x80 && c->acc & 0x80) && !(sum && 0x80)){//if the inc and acc vals are both negative and the sum isnt then overflow
+		SetPBit(c,VFLAG,1);
+	}
+	else if (!(inc & 0x80 || c->acc & 0x80) && sum && 0x80){//if the inc and acc vals are both positive and the sum isnt
+		SetPBit(c,VFLAG,1);
+	}
+	else{SetPBit(c,VFLAG,0);}
+	c->acc = sum & 0xFF;
+	SetPBit(c,NFLAG,c->acc & 0x80);
+	SetPBit(c,ZFLAG, c->acc == 0x00);
+}
+void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode){
+	unsigned char cpos = 0;//used for zero page addressing
+	unsigned short spos = 0;//used for addressing
+	signed char temp = 0; //used for temporary math
+	switch (op){
+		case 0x00://ORA
+		switch (amode){//addressing mode
+			case 0x00://indirect x zeropage
+			cpos = c->instbuffer[1] + c->x;
+			spos = (c->RAM[cpos+1] << 8) + c->RAM[cpos];
+			c->acc = c->acc | ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x01://zeropage
+			c->acc = c->acc | c->RAM[c->instbuffer[1]];
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x02://immediate
+			c->acc = c->acc | c->instbuffer[1];
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x03://absolute
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+			c->acc = c->acc | ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 3;
+			break;
+			case 0x04://indirect y
+			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
+			c->acc = c->acc | ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x05://zeropage x
+			cpos = c->instbuffer[1] + c->x;
+			c->acc = c->acc | c->RAM[cpos];
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x06://absolute y
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
+			c->acc = c->acc | ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 3;
+			break;
+			case 0x07:
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+			c->acc = c->acc | ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 3;
+			break;
+			default:
+			c->pc++;
+			break;
+		}
+		break;
+		case 0x01://AND
+		switch (amode){//addressing mode
+			case 0x00://indirect x zeropage
+			cpos = c->instbuffer[1] + c->x;
+			spos = (c->RAM[cpos+1] << 8) + c->RAM[cpos];
+			c->acc = c->acc & ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x01://zeropage
+			c->acc = c->acc & c->RAM[c->instbuffer[1]];
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x02://immediate
+			c->acc = c->acc & c->instbuffer[1];
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x03://absolute
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+			c->acc = c->acc & ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 3;
+			break;
+			case 0x04://indirect y
+			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
+			c->acc = c->acc & ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x05://zeropage x
+			cpos = c->instbuffer[1] + c->x;
+			c->acc = c->acc & c->RAM[cpos];
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x06://absolute y
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
+			c->acc = c->acc & ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 3;
+			break;
+			case 0x07:
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+			c->acc = c->acc & ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 3;
+			break;
+			default:
+			c->pc++;
+			break;
+		}
+		break;
+		case 0x02://EOR
+		switch (amode){//addressing mode
+			case 0x00://indirect x zeropage
+			cpos = c->instbuffer[1] + c->x;
+			spos = (c->RAM[cpos+1] << 8) + c->RAM[cpos];
+			c->acc = c->acc ^ ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x01://zeropage
+			c->acc = c->acc ^ c->RAM[c->instbuffer[1]];
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x02://immediate
+			c->acc = c->acc ^ c->instbuffer[1];
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x03://absolute
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+			c->acc = c->acc ^ ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 3;
+			break;
+			case 0x04://indirect y
+			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
+			c->acc = c->acc ^ ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x05://zeropage x
+			cpos = c->instbuffer[1] + c->x;
+			c->acc = c->acc ^ c->RAM[cpos];
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x06://absolute y
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
+			c->acc = c->acc ^ ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 3;
+			break;
+			case 0x07:
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+			c->acc = c->acc ^ ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 3;
+			break;
+			default:
+			c->pc++;
+			break;
+		}
+		break;
+		
+		case 0x03://ADC
+		switch (amode){//addressing mode
+			case 0x00://indirect x zeropage
+			cpos = c->instbuffer[1] + c->x;
+			spos = (c->RAM[cpos+1] << 8) + c->RAM[cpos];
+			cpos = ReadMemory(c,spos);
+			ADCFunction(c,cpos);
+			c->pc += 2;
+			break;
+			case 0x01://zeropage
+			ADCFunction(c,c->RAM[c->instbuffer[1]]);
+			c->pc += 2;
+			break;
+			case 0x02://immediate
+			ADCFunction(c,c->instbuffer[1]);
+			c->pc += 2;
+			break;
+			case 0x03://absolute
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+			ADCFunction(c, ReadMemory(c,spos));
+			c->pc += 3;
+			break;
+			case 0x04://indirect y
+			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
+			ADCFunction(c, ReadMemory(c,spos));
+			c->pc += 2;
+			break;
+			case 0x05://zeropage x
+			cpos = c->instbuffer[1] + c->x;
+			ADCFunction(c, c->RAM[cpos]);
+			c->pc += 2;
+			break;
+			case 0x06://absolute y
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
+			ADCFunction(c, ReadMemory(c,spos));
+			c->pc += 3;
+			break;
+			case 0x07:
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+			ADCFunction(c, ReadMemory(c,spos));
+			c->pc += 3;
+			break;
+			default:
+			c->pc++;
+			break;
+		}
+		break;
+		
+		case 0x04://STA
+		switch (amode){//addressing mode
+			case 0x00://indirect x zeropage
+			cpos = c->instbuffer[1] + c->x;
+			spos = (c->RAM[cpos+1] << 8) + c->RAM[cpos];
+			WriteMemory(c,spos,c->acc);
+			c->pc += 2;
+			break;
+			case 0x01://zeropage
+			WriteMemory(c,c->instbuffer[1],c->acc);
+			c->pc += 2;
+			break;
+			case 0x02://immediate
+			WriteMemory(c,c->instbuffer[1],c->acc);
+			c->pc += 2;
+			break;
+			case 0x03://absolute
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+			WriteMemory(c,spos,c->acc);
+			c->pc += 3;
+			break;
+			case 0x04://indirect y
+			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
+			WriteMemory(c,spos,c->acc);
+			c->pc += 2;
+			break;
+			case 0x05://zeropage x
+			cpos = c->instbuffer[1] + c->x;
+			WriteMemory(c,cpos,c->acc);
+			c->pc += 2;
+			break;
+			case 0x06://absolute y
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
+			WriteMemory(c,spos,c->acc);
+			c->pc += 3;
+			break;
+			case 0x07://absolute x
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+			WriteMemory(c,spos,c->acc);
+			c->pc += 3;
+			break;
+			default:
+			c->pc++;
+			break;
+		}
+		break;
+		case 0x05://LDA
+		switch (amode){//addressing mode
+			case 0x00://indirect x zeropage
+			cpos = c->instbuffer[1] + c->x;
+			spos = (c->RAM[cpos+1] << 8) + c->RAM[cpos];
+			c->acc = ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x01://zeropage
+			c->acc = ReadMemory(c,c->instbuffer[1]);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x02://
+			c->acc = ReadMemory(c,c->instbuffer[1]);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x03://absolute
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+			c->acc = ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 3;
+			break;
+			case 0x04://indirect y
+			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
+			c->acc = ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x05://zeropage x
+			cpos = c->instbuffer[1] + c->x;
+			c->acc = ReadMemory(c,cpos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 2;
+			break;
+			case 0x06://absolute y
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
+			c->acc = ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 3;
+			break;
+			case 0x07://absolute x
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+			c->acc = ReadMemory(c,spos);
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			c->pc += 3;
+			break;
+			default:
+			c->pc++;
+			break;
+		}
+		break;
+		case 0x06://CMP
+		switch (amode){//addressing mode
+			case 0x00://indirect x zeropage
+			cpos = c->instbuffer[1] + c->x;
+			spos = (c->RAM[cpos+1] << 8) + c->RAM[cpos];
+			temp = c->acc - ReadMemory(c,spos);
+			SetPBit(c,NFLAG,temp & 0x80);
+			SetPBit(c,ZFLAG, temp == 0x00);
+			SetPBit(c,CFLAG, temp >= 0);
+			c->pc += 2;
+			break;
+			case 0x01://zeropage
+			temp = c->acc - ReadMemory(c,c->instbuffer[1]);
+			SetPBit(c,NFLAG,temp & 0x80);
+			SetPBit(c,ZFLAG, temp == 0x00);
+			SetPBit(c,CFLAG, temp >= 0);
+			c->pc += 2;
+			break;
+			case 0x02://immediate
+			temp = c->acc - c->instbuffer[1];
+			SetPBit(c,NFLAG,temp & 0x80);
+			SetPBit(c,ZFLAG, temp == 0x00);
+			SetPBit(c,CFLAG, temp >= 0);
+			c->pc += 2;
+			break;
+			case 0x03://absolute
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+			temp = c->acc - ReadMemory(c,spos);
+			SetPBit(c,NFLAG,temp & 0x80);
+			SetPBit(c,ZFLAG, temp == 0x00);
+			SetPBit(c,CFLAG, temp >= 0);
+			c->pc += 3;
+			break;
+			case 0x04://indirect y
+			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
+			temp = c->acc - ReadMemory(c,spos);
+			SetPBit(c,NFLAG,temp & 0x80);
+			SetPBit(c,ZFLAG, temp == 0x00);
+			SetPBit(c,CFLAG, temp >= 0);
+			c->pc += 2;
+			break;
+			case 0x05://zeropage x
+			cpos = c->instbuffer[1] + c->x;
+			temp = c->acc - ReadMemory(c,cpos);
+			SetPBit(c,NFLAG,temp & 0x80);
+			SetPBit(c,ZFLAG, temp == 0x00);
+			SetPBit(c,CFLAG, temp >= 0);
+			c->pc += 2;
+			break;
+			case 0x06://absolute y
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
+			temp = c->acc - ReadMemory(c,spos);
+			SetPBit(c,NFLAG,temp & 0x80);
+			SetPBit(c,ZFLAG, temp == 0x00);
+			SetPBit(c,CFLAG, temp >= 0);
+			c->pc += 3;
+			break;
+			case 0x07://absolute x
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+			temp = c->acc - ReadMemory(c,spos);
+			SetPBit(c,NFLAG,temp & 0x80);
+			SetPBit(c,ZFLAG, temp == 0x00);
+			SetPBit(c,CFLAG, temp >= 0);
+			c->pc += 3;
+			break;
+			default:
+			c->pc++;
+			break;
+		}
+		break;
+		case 0x07://SBC
+		switch (amode){//addressing mode
+			case 0x00://indirect x zeropage
+			cpos = c->instbuffer[1] + c->x;
+			spos = (c->RAM[cpos+1] << 8) + c->RAM[cpos];
+			cpos = ReadMemory(c,spos);
+			ADCFunction(c,~cpos);
+			c->pc += 2;
+			break;
+			case 0x01://zeropage
+			ADCFunction(c,~c->RAM[c->instbuffer[1]]);
+			c->pc += 2;
+			break;
+			case 0x02://immediate
+			ADCFunction(c,~c->instbuffer[1]);
+			c->pc += 2;
+			break;
+			case 0x03://absolute
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+			ADCFunction(c, ~ReadMemory(c,spos));
+			c->pc += 3;
+			break;
+			case 0x04://indirect y
+			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
+			ADCFunction(c, ~ReadMemory(c,spos));
+			c->pc += 2;
+			break;
+			case 0x05://zeropage x
+			cpos = c->instbuffer[1] + c->x;
+			ADCFunction(c, ~c->RAM[cpos]);
+			c->pc += 2;
+			break;
+			case 0x06://absolute y
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
+			ADCFunction(c, ~ReadMemory(c,spos));
+			c->pc += 3;
+			break;
+			case 0x07:
+			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+			ADCFunction(c, ~ReadMemory(c,spos));
+			c->pc += 3;
+			break;
+			default:
+			c->pc++;
+			break;
+		}
+		break;
+		default:
+		break;
+	}
+}
 void RunInstruction(struct cpu* c){
 	FetchInstruction(c);
-	switch (c->instbuffer[0]){//implementing this sucks
-		case 0x00: //BRK impl
-			c->pc+= 2;
-			break;
-		case 0x01://OR oper,x
-			c->pc+= 2;
-			break;
-		case 0x05://OR oper
-			c->pc+= 2;
-			break;
-		case 0x06://ASL zpg
-			c->pc+= 2;
-			break;
-		case 0x08://PHP impl
-			c->pc+= 1;
-			break;
-		case 0x09://OR #oper
-			c->pc+= 2;
-			break;
-		default://nop
-			c->pc+= 2;
-			break;
+	unsigned char inst = c->instbuffer[0];//instructions are indexed in the form "aaabbbcc"
+	//according to http://nparker.llx.com/a2/opcodes.html
+	unsigned char amode = (inst >> 2) & 0b00000111;//addressing mode
+	unsigned char op = (inst >> 5) & 0b00000111;//op code
+	if (inst & 0x01){//cc == 01
+		RunSubset1Instructions(c,op,amode);
 	}
 }
 
@@ -213,11 +693,5 @@ void TickCpu(struct cpu* c){
 			RunInstruction(c);
 			break;
 	}
-}
-void SetPBit(struct cpu* tmp, unsigned char pos){
-	tmp->p |= ( 0x01 << pos);
-}
-void ClearPBit(struct cpu* tmp, unsigned char pos){
-	tmp->p &= ~(0x01 << pos);
 }
 #endif /* CPU_H_ */
