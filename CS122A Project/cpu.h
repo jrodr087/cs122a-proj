@@ -77,6 +77,9 @@ inline void SetPBit(struct cpu* tmp, unsigned char pos, unsigned char val){
 		tmp->status &= ~(0x01 << pos);
 	}
 }
+unsigned char GetPBit(struct cpu* c,unsigned char pos){
+	return ((c->status >> pos) & 0x01);
+}
 void PushStack(struct cpu* c, unsigned char val){
 	c->s--;
 	c->RAM[c->s+stackhead] = val;
@@ -664,6 +667,278 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 		break;
 		default:
 		break;
+	}
+}
+
+void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode){
+	unsigned char cpos = 0;//used for zero page addressing
+	unsigned short spos = 0;//used for addressing
+	signed char temp = 0; //used for temporary math
+	unsigned char utemp = 0;//used for unsigned temporary math
+	switch (op){
+		case 0x00://ASL
+			switch(amode){
+				case 0://immediate
+					//this shouldnt happen apparently
+					c->pc+= 2;
+					break;
+				case 1://zeropage
+					utemp = c->RAM[c->instbuffer[1]];
+					SetPBit(c,CFLAG,utemp&0x80);
+					utemp = utemp<<1;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,utemp&0x80);
+					c->RAM[c->instbuffer[1]] = utemp;
+					c->pc+= 2;
+					break;
+				case 2://accumulator
+					SetPBit(c,CFLAG,c->acc&0x80);
+					c->acc = c->acc<<1;
+					SetPBit(c,ZFLAG,!c->acc);
+					SetPBit(c,NFLAG,c->acc&0x80);
+					c->pc+= 1;
+					break;
+				case 3://absolute
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					utemp = ReadMemory(c,spos);
+					SetPBit(c,CFLAG,utemp&0x80);
+					utemp = utemp<<1;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,utemp&0x80);
+					WriteMemory(c,spos,utemp);
+					c->pc+= 3;
+					break;
+				case 4://this case is illegal
+					c->pc+= 2;
+					break;
+				case 5://zero page, x
+					cpos = c->instbuffer[1] + c->x;
+					utemp = c->RAM[cpos];
+					SetPBit(c,CFLAG,utemp&0x80);
+					utemp = utemp<<1;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,utemp&0x80);
+					c->RAM[cpos] = utemp;
+					c->pc+= 2;
+					break;
+				case 6://this case is illegal
+					c->pc+= 2;
+					break;
+				case 7://absolute, x
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+					utemp = ReadMemory(c,spos);
+					SetPBit(c,CFLAG,temp&0x80);
+					utemp = utemp<<1;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,utemp&0x80);
+					WriteMemory(c,spos,utemp);
+					c->pc+= 3;
+					break;
+			}	
+			break;
+		case 0x01://ROL
+			switch(amode){
+				case 0://immediate
+				//this shouldnt happen apparently
+					c->pc+= 2;
+					break;
+				case 1://zeropage
+					utemp = c->RAM[c->instbuffer[1]];
+					cpos = GetPBit(c,CFLAG);
+					SetPBit(c,CFLAG,utemp&0x80);
+					utemp = utemp<<1;
+					utemp |= cpos;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,utemp&0x80);
+					c->RAM[c->instbuffer[1]] = utemp;
+					c->pc+= 2;
+					break;
+				case 2://accumulator
+					utemp = GetPBit(c,CFLAG);
+					SetPBit(c,CFLAG,c->acc&0x80);
+					c->acc = c->acc<<1;
+					c->acc |= utemp;
+					SetPBit(c,ZFLAG,!c->acc);
+					SetPBit(c,NFLAG,c->acc&0x80);
+					c->pc+= 1;
+					break;
+				case 3://absolute
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					utemp = ReadMemory(c,spos);
+					cpos = GetPBit(c,CFLAG);
+					SetPBit(c,CFLAG,utemp&0x80);
+					utemp = utemp<<1;
+					utemp |= cpos;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,utemp&0x80);
+					WriteMemory(c,spos,utemp);
+					c->pc+= 3;
+					break;
+				case 4://this case is illegal
+					c->pc+= 2;
+					break;
+				case 5://zero page, x
+					cpos = c->instbuffer[1] + c->x;
+					utemp = c->RAM[cpos];
+					spos = GetPBit(c,CFLAG);
+					SetPBit(c,CFLAG,utemp&0x80);
+					utemp = utemp<<1;
+					utemp |= (spos && 0xFF);
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,utemp&0x80);
+					c->RAM[cpos] = utemp;
+					c->pc+= 2;
+					break;
+				case 6://this case is illegal
+					c->pc+= 2;
+					break;
+				case 7://absolute, x
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+					cpos = GetPBit(c,CFLAG);
+					utemp = ReadMemory(c,spos);
+					SetPBit(c,CFLAG,temp&0x80);
+					utemp = utemp<<1;
+					utemp |= cpos;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,utemp&0x80);
+					WriteMemory(c,spos,utemp);
+					c->pc+= 3;
+				break;
+			}
+			break;
+		case 0x02://LSR
+			switch(amode){
+				case 0://immediate
+					//this shouldnt happen apparently
+					c->pc+= 2;
+					break;
+				case 1://zeropage
+					utemp = c->RAM[c->instbuffer[1]];
+					SetPBit(c,CFLAG,utemp&0x01);
+					utemp = utemp>>1;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,0);
+					c->RAM[c->instbuffer[1]] = utemp;
+					c->pc+= 2;
+					break;
+				case 2://accumulator
+					SetPBit(c,CFLAG,c->acc&0x01);
+					c->acc = c->acc>>1;
+					SetPBit(c,ZFLAG,!c->acc);
+					SetPBit(c,NFLAG,0);
+					c->pc+= 1;
+					break;
+				case 3://absolute
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					utemp = ReadMemory(c,spos);
+					SetPBit(c,CFLAG,utemp&0x01);
+					utemp = utemp>>1;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,0);
+					WriteMemory(c,spos,utemp);
+					c->pc+= 3;
+					break;
+				case 4://this case is illegal
+					c->pc+= 2;
+					break;
+				case 5://zero page, x
+					cpos = c->instbuffer[1] + c->x;
+					utemp = c->RAM[cpos];
+					SetPBit(c,CFLAG,utemp&0x01);
+					utemp = utemp>>1;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,0);
+					c->RAM[cpos] = utemp;
+					c->pc+= 2;
+					break;
+				case 6://this case is illegal
+					c->pc+= 2;
+					break;
+				case 7://absolute, x
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+					utemp = ReadMemory(c,spos);
+					SetPBit(c,CFLAG,temp&0x01);
+					utemp = utemp>>1;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,0);
+					WriteMemory(c,spos,utemp);
+					c->pc+= 3;
+					break;
+			}
+			break;
+		case 0x03://ROR
+			switch(amode){
+				case 0://immediate
+					//this shouldnt happen apparently
+					c->pc+= 2;
+				break;
+				case 1://zeropage
+					utemp = c->RAM[c->instbuffer[1]];
+					cpos = GetPBit(c,CFLAG);
+					SetPBit(c,CFLAG,utemp&0x01);
+					utemp = utemp>>1;
+					utemp |= cpos << 7;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,0);
+					c->RAM[c->instbuffer[1]] = utemp;
+					c->pc+= 2;
+					break;
+				case 2://accumulator
+					SetPBit(c,CFLAG,c->acc&0x01);
+					cpos = GetPBit(c,CFLAG);
+					c->acc = c->acc>>1;
+					c->acc |= cpos << 7;
+					SetPBit(c,ZFLAG,!c->acc);
+					SetPBit(c,NFLAG,0);
+					c->pc+= 1;
+					break;
+				case 3://absolute
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					utemp = ReadMemory(c,spos);
+					cpos = GetPBit(c,CFLAG);
+					SetPBit(c,CFLAG,utemp&0x01);
+					utemp = utemp>>1;
+					utemp |= cpos << 7;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,0);
+					WriteMemory(c,spos,utemp);
+					c->pc+= 3;
+					break;
+				case 4://this case is illegal
+					c->pc+= 2;
+					break;
+				case 5://zero page, x
+					cpos = c->instbuffer[1] + c->x;
+					utemp = c->RAM[cpos];
+					spos = GetPBit(c,CFLAG);
+					SetPBit(c,CFLAG,utemp&0x01);
+					utemp = utemp>>1;
+					utemp |= (spos << 7) & 0xFF;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,0);
+					c->RAM[cpos] = utemp;
+					c->pc+= 2;
+					break;
+				case 6://this case is illegal
+					c->pc+= 2;
+					break;
+				case 7://absolute, x
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+					utemp = ReadMemory(c,spos);
+					cpos = GetPBit(c,CFLAG);
+					SetPBit(c,CFLAG,temp&0x01);
+					utemp = utemp>>1;
+					utemp |= cpos << 7;
+					SetPBit(c,ZFLAG,!utemp);
+					SetPBit(c,NFLAG,0);
+					WriteMemory(c,spos,utemp);
+					c->pc+= 3;
+					break;
+			}
+			break;
+		default:
+			c->pc++;
+			break;
 	}
 }
 void RunInstruction(struct cpu* c){
