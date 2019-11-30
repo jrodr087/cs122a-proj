@@ -201,6 +201,7 @@ void ADCFunction(struct cpu* c, unsigned char inc){
 	SetPBit(c,ZFLAG, c->acc == 0x00);
 }
 void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode){
+	//these instructions typically concern the accumulator
 	unsigned char cpos = 0;//used for zero page addressing
 	unsigned short spos = 0;//used for addressing
 	signed char temp = 0; //used for temporary math
@@ -453,9 +454,9 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			c->pc += 2;
 			break;
 			case 0x02://immediate
-			WriteMemory(c,c->instbuffer[1],c->acc);
-			c->pc += 2;
-			break;
+				//illegal
+				c->pc += 2;
+				break;
 			case 0x03://absolute
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 			WriteMemory(c,spos,c->acc);
@@ -502,8 +503,8 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			SetPBit(c,ZFLAG, c->acc == 0x00);
 			c->pc += 2;
 			break;
-			case 0x02://
-			c->acc = ReadMemory(c,c->instbuffer[1]);
+			case 0x02://immediate
+			c->acc = c->instbuffer[1];
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
 			c->pc += 2;
@@ -671,6 +672,7 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 }
 
 void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode){
+	//these instructions typically concern the x register
 	unsigned char cpos = 0;//used for zero page addressing
 	unsigned short spos = 0;//used for addressing
 	signed char temp = 0; //used for temporary math
@@ -797,7 +799,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					cpos = GetPBit(c,CFLAG);
 					utemp = ReadMemory(c,spos);
 					SetPBit(c,CFLAG,temp&0x80);
-					utemp = utemp<<1;
+					utemp = (char)(utemp)<<1;
 					utemp |= cpos;
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,utemp&0x80);
@@ -936,19 +938,527 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					break;
 			}
 			break;
+		case 0x04://STX
+			switch (amode){//addressing mode
+					case 0x00://indirect x zeropage
+					//illegal
+					c->pc+= 2;
+					break;
+				case 0x01://zeropage
+					WriteMemory(c,c->instbuffer[1],c->x);
+					c->pc += 2;
+					break;
+				case 0x02://immediate
+					//illegal
+					c->pc += 2;
+					break;
+				case 0x03://absolute
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					WriteMemory(c,spos,c->x);
+					c->pc += 3;
+					break;
+				case 0x04://indirect y
+					//illegal
+					c->pc += 2;
+					break;
+				case 0x05://zeropage y
+					cpos = c->instbuffer[1] + c->y;
+					WriteMemory(c,cpos,c->x);
+					c->pc += 2;
+					break;
+				case 0x06://absolute y
+					//illegal
+					c->pc += 3;
+					break;
+				case 0x07://absolute x
+					//illegal
+					c->pc += 3;
+					break;
+				default:
+					c->pc++;
+					break;
+			}
+			break;
+		case 0x05://LDX
+			switch (amode){//addressing mode
+				case 0x00://immediate
+					c->x = c->instbuffer[1];
+					SetPBit(c,NFLAG,c->x & 0x80);
+					SetPBit(c,ZFLAG, c->x == 0x00);
+					c->pc += 2;
+					break;
+				case 0x01://zeropage
+					c->x = ReadMemory(c,c->instbuffer[1]);
+					SetPBit(c,NFLAG,c->x & 0x80);
+					SetPBit(c,ZFLAG, c->x == 0x00);
+					c->pc += 2;
+					break;
+				case 0x02://accumulator
+					//illegal
+					c->pc += 2;
+					break;
+				case 0x03://absolute
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					c->x = ReadMemory(c,spos);
+					SetPBit(c,NFLAG,c->x & 0x80);
+					SetPBit(c,ZFLAG, c->x == 0x00);
+					c->pc += 3;
+					break;
+				case 0x04://indirect y
+					//illegal
+					c->pc += 2;
+					break;
+				case 0x05://zeropage y
+					cpos = c->instbuffer[1] + c->y;
+					c->x = ReadMemory(c,cpos);
+					SetPBit(c,NFLAG,c->x & 0x80);
+					SetPBit(c,ZFLAG, c->x == 0x00);
+					c->pc += 2;
+					break;
+				case 0x06://absolute y
+					//illegal
+					c->pc += 3;
+					break;
+				case 0x07://absolute y
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
+					c->x = ReadMemory(c,spos);
+					SetPBit(c,NFLAG,c->x & 0x80);
+					SetPBit(c,ZFLAG, c->x == 0x00);
+					c->pc += 3;
+					break;
+				default:
+					c->pc++;
+					break;
+			}
+			break;
+		case 0x06://DEC
+			switch (amode){//addressing mode
+				case 0x00://immediate
+					//illegal
+					break;
+				case 0x01://zeropage
+					temp = ReadMemory(c,c->instbuffer[1]);
+					temp--;
+					WriteMemory(c,c->instbuffer[1],temp);
+					SetPBit(c,NFLAG,temp& 0x80);
+					SetPBit(c,ZFLAG, temp == 0x00);
+					c->pc += 2;
+				break;
+				case 0x02://acc
+					//illegal
+					c->pc += 2;
+					break;
+				case 0x03://absolute
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					temp = ReadMemory(c,spos);
+					temp--;
+					WriteMemory(c,spos,temp);
+					SetPBit(c,NFLAG,temp& 0x80);
+					SetPBit(c,ZFLAG, temp == 0x00);
+					c->pc += 3;
+					break;
+				case 0x04:
+					//illegal
+					c->pc += 2;
+					break;
+				case 0x05://zeropage x
+					cpos = c->instbuffer[1] + c->x;
+					temp = ReadMemory(c,cpos);
+					temp--;
+					WriteMemory(c,cpos,temp);
+					SetPBit(c,NFLAG,temp& 0x80);
+					SetPBit(c,ZFLAG, temp == 0x00);
+					c->pc += 2;
+					break;
+				case 0x06://absolute y
+					//illegal
+					c->pc += 3;
+					break;
+				case 0x07://absolute x
+					//illegal
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+					temp = ReadMemory(c,spos);
+					temp--;
+					WriteMemory(c,spos,temp);
+					SetPBit(c,NFLAG,temp& 0x80);
+					SetPBit(c,ZFLAG, temp == 0x00);
+					c->pc += 3;
+					break;
+				default:
+					c->pc++;
+					break;
+			}
+			break;
+		case 0x07://INC
+		switch (amode){//addressing mode
+			case 0x00://immediate
+				//illegal
+				break;
+			case 0x01://zeropage
+				temp = ReadMemory(c,c->instbuffer[1]);
+				temp++;
+				WriteMemory(c,c->instbuffer[1],temp);
+				SetPBit(c,NFLAG,temp& 0x80);
+				SetPBit(c,ZFLAG, temp == 0x00);
+				c->pc += 2;
+				break;
+			case 0x02://acc
+				//illegal
+				c->pc += 2;
+				break;
+			case 0x03://absolute
+				spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+				temp = ReadMemory(c,spos);
+				temp++;
+				WriteMemory(c,spos,temp);
+				SetPBit(c,NFLAG,temp& 0x80);
+				SetPBit(c,ZFLAG, temp == 0x00);
+				c->pc += 3;
+				break;
+			case 0x04:
+				//illegal
+				c->pc += 2;
+				break;
+			case 0x05://zeropage x
+				cpos = c->instbuffer[1] + c->x;
+				temp = ReadMemory(c,cpos);
+				temp++;
+				WriteMemory(c,cpos,temp);
+				SetPBit(c,NFLAG,temp& 0x80);
+				SetPBit(c,ZFLAG, temp == 0x00);
+				c->pc += 2;
+				break;
+			case 0x06://absolute y
+				//illegal
+				c->pc += 3;
+				break;
+			case 0x07://absolute x
+				//illegal
+				spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+				temp = ReadMemory(c,spos);
+				temp++;
+				WriteMemory(c,spos,temp);
+				SetPBit(c,NFLAG,temp& 0x80);
+				SetPBit(c,ZFLAG, temp == 0x00);
+				c->pc += 3;
+				break;
+			default:
+				c->pc++;
+				break;
+		}
+		break;
 		default:
 			c->pc++;
 			break;
 	}
 }
+
+void RunSubset3Instructions(struct cpu* c, unsigned char op, unsigned char amode){
+	//these instructions typically concern the y register
+	unsigned char cpos = 0;//used for zero page addressing
+	unsigned short spos = 0;//used for addressing
+	signed char temp = 0; //used for temporary math
+	unsigned char utemp = 0;//used for unsigned temporary math
+	switch (op){
+		case 0x01://BIT
+			switch(amode){
+				case 0://immediate
+					c->pc+= 2;//illegal
+					break;
+				case 1://zero page
+					utemp = ReadMemory(c,c->instbuffer[1]);
+					SetPBit(c,VFLAG,utemp & 0x40);
+					SetPBit(c,NFLAG,utemp & 0x80);
+					utemp = utemp & c->acc;
+					SetPBit(c,ZFLAG,utemp);
+					c->pc+= 2;
+					break;
+				case 3://absolute
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					utemp = ReadMemory(c,spos);
+					SetPBit(c,VFLAG,utemp & 0x40);
+					SetPBit(c,NFLAG,utemp & 0x80);
+					utemp = utemp & c->acc;
+					SetPBit(c,ZFLAG,utemp);
+					c->pc+=3;
+					break;
+				case 5://zero page
+					c->pc+= 2;//illegal operation
+					break;
+				case 7:
+					c->pc+= 3;//illegal
+					break;
+				default:
+					c->pc++;//illegal
+					break;
+			}
+			break;
+		case 0x02://JMP
+			switch(amode){
+				case 0://immediate
+					c->pc+= 2;//illegal
+					break;
+				case 1://zero page
+					//illegal
+					c->pc+= 2;
+					break;
+				case 3://indirect
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					//spos = ReadMemory(c,spos);
+					if ((spos & 0xFF) != 0xFF){
+						spos = (ReadMemory(c,spos+1)<<8) + ReadMemory(c,spos);
+					}
+					else{
+						spos = (ReadMemory(c,spos) + (ReadMemory(c,spos & 0xFF00) << 8) );//replicates a bug the 6502 has when fetching an indirect address at a page boundary
+					}
+					c->pc = spos;
+					c->pc+= 3;
+					break;
+				case 5://zero page
+					c->pc+= 2;//illegal operation
+					break;
+				case 7:
+					c->pc+= 3;//illegal
+					break;
+				default:
+					c->pc++;//illegal
+					break;
+			}
+			break;
+		case 0x03://JMP
+			switch(amode){
+				case 0://immediate
+				c->pc+= 2;//illegal
+				break;
+				case 1://zero page
+				//illegal
+				c->pc+= 2;
+				break;
+				case 3://indirect
+				spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+				//spos = ReadMemory(c,spos);
+				c->pc = spos;
+				c->pc+= 3;
+				break;
+				case 5://zero page
+				c->pc+= 2;//illegal operation
+				break;
+				case 7:
+				c->pc+= 3;//illegal
+				break;
+				default:
+				c->pc++;//illegal
+				break;
+			}
+			break;
+		case 0x04://STY
+			switch (amode){//addressing mode
+				case 0x00://immediate
+				//illegal
+				break;
+				case 0x01://zeropage
+				WriteMemory(c,c->instbuffer[1],c->y);
+				c->pc += 2;
+				break;
+				case 0x02://immediate
+				//illegal
+				c->pc += 2;
+				break;
+				case 0x03://absolute
+				spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+				WriteMemory(c,spos,c->y);
+				c->pc += 3;
+				break;
+				case 0x04://indirect y
+				//illegal
+				c->pc += 2;
+				break;
+				case 0x05://zeropage x
+					cpos = c->instbuffer[1] + c->x;
+					WriteMemory(c,cpos,c->y);
+					c->pc += 2;
+					break;
+				case 0x06://absolute y
+				//illegal
+				c->pc += 3;
+				break;
+				case 0x07://absolute x
+				//illegal
+				c->pc += 3;
+				break;
+				default:
+				c->pc++;
+				break;
+			}
+			break;
+		case 0x05://LDY
+			switch (amode){//addressing mode
+				case 0x00://immediate
+					c->y = c->instbuffer[1];
+					SetPBit(c,NFLAG,c->y & 0x80);
+					SetPBit(c,ZFLAG, c->y == 0x00);
+					c->pc += 2;
+					break;
+				case 0x01://zeropage
+					c->y = ReadMemory(c,c->instbuffer[1]);
+					SetPBit(c,NFLAG,c->y & 0x80);
+					SetPBit(c,ZFLAG, c->y == 0x00);
+					c->pc += 2;
+					break;
+				case 0x02://accumulator
+					//illegal
+					c->pc += 2;
+					break;
+				case 0x03://absolute
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					c->x = ReadMemory(c,spos);
+					SetPBit(c,NFLAG,c->x & 0x80);
+					SetPBit(c,ZFLAG, c->x == 0x00);
+					c->pc += 3;
+					break;
+				case 0x04://indirect y
+					//illegal
+					c->pc += 2;
+					break;
+				case 0x05://zeropage x
+					cpos = c->instbuffer[1] + c->x;
+					c->y = ReadMemory(c,cpos);
+					SetPBit(c,NFLAG,c->y & 0x80);
+					SetPBit(c,ZFLAG, c->y == 0x00);
+					c->pc += 2;
+					break;
+				case 0x06://absolute y
+					//illegal
+					c->pc += 3;
+					break;
+				case 0x07://absolute x
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
+					c->y = ReadMemory(c,spos);
+					SetPBit(c,NFLAG,c->y & 0x80);
+					SetPBit(c,ZFLAG, c->y == 0x00);
+					c->pc += 3;
+					break;
+				default:
+					c->pc++;
+					break;
+				}
+				break;
+		case 0x06://CPY
+			switch (amode){//addressing mode
+				case 0x00://immediate
+					temp = c->y - c->instbuffer[1];
+					SetPBit(c,NFLAG,temp & 0x80);
+					SetPBit(c,ZFLAG, temp == 0x00);
+					SetPBit(c,CFLAG, temp >= 0);
+					c->pc += 2;
+					break;
+				case 0x01://zeropage
+					temp = c->y - ReadMemory(c,c->instbuffer[1]);
+					SetPBit(c,NFLAG,temp & 0x80);
+					SetPBit(c,ZFLAG, temp == 0x00);
+					SetPBit(c,CFLAG, temp >= 0);
+					c->pc += 2;
+					break;
+				case 0x02:
+					c->pc += 2;//illegal
+					break;
+				case 0x03://absolute
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					temp = c->y - ReadMemory(c,spos);
+					SetPBit(c,NFLAG,temp & 0x80);
+					SetPBit(c,ZFLAG, temp == 0x00);
+					SetPBit(c,CFLAG, temp >= 0);
+					c->pc += 3;
+					break;
+				case 0x04://indirect y
+					//illegal
+					c->pc += 2;
+					break;
+				case 0x05://zeropage x
+					//illegal
+					c->pc += 2;
+					break;
+				case 0x06://absolute y
+					//illegal
+					c->pc += 3;
+					break;
+				case 0x07://absolute x
+					//illegal
+					c->pc += 3;
+					break;
+				default:
+					c->pc++;
+					break;
+			}
+			break;
+		case 0x07://CPX
+			switch (amode){//addressing mode
+				case 0x00://immediate
+					temp = c->x - c->instbuffer[1];
+					SetPBit(c,NFLAG,temp & 0x80);
+					SetPBit(c,ZFLAG, temp == 0x00);
+					SetPBit(c,CFLAG, temp >= 0);
+					c->pc += 2;
+					break;
+				case 0x01://zeropage
+					temp = c->x - ReadMemory(c,c->instbuffer[1]);
+					SetPBit(c,NFLAG,temp & 0x80);
+					SetPBit(c,ZFLAG, temp == 0x00);
+					SetPBit(c,CFLAG, temp >= 0);
+					c->pc += 2;
+					break;
+				case 0x02:
+					c->pc += 2;//illegal
+					break;
+				case 0x03://absolute
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					temp = c->x - ReadMemory(c,spos);
+					SetPBit(c,NFLAG,temp & 0x80);
+					SetPBit(c,ZFLAG, temp == 0x00);
+					SetPBit(c,CFLAG, temp >= 0);
+					c->pc += 3;
+					break;
+				case 0x04://indirect y
+					//illegal
+					c->pc += 2;
+				break;
+				case 0x05://zeropage x
+					//illegal
+					c->pc += 2;
+					break;
+				case 0x06://absolute y
+					//illegal
+					c->pc += 3;
+					break;
+				case 0x07://absolute x
+					//illegal
+					c->pc += 3;
+					break;
+				default:
+					c->pc++;
+					break;
+			}
+			break;
+		default:
+			c->pc++;
+			break;
+	}
+}
+
 void RunInstruction(struct cpu* c){
 	FetchInstruction(c);
 	unsigned char inst = c->instbuffer[0];//instructions are indexed in the form "aaabbbcc"
 	//according to http://nparker.llx.com/a2/opcodes.html
 	unsigned char amode = (inst >> 2) & 0b00000111;//addressing mode
 	unsigned char op = (inst >> 5) & 0b00000111;//op code
-	if (inst & 0x01){//cc == 01
+	if ((inst & 0x11) == 0x01){//cc == 01
 		RunSubset1Instructions(c,op,amode);
+	}
+	if ((inst & 0x11) == 0x10){//cc == 01
+		RunSubset2Instructions(c,op,amode);
+	}
+	if ((inst & 0x11) == 0x00){//cc == 00
+		RunSubset3Instructions(c,op,amode);
 	}
 }
 
