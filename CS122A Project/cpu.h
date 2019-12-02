@@ -61,7 +61,7 @@ struct cpu
 	unsigned char RAM[ramsize];//2KB internal ram
 	unsigned char initbuff[FUNCTIONBUFFSIZE];//internal buffer for the init function
 	unsigned char playbuff[FUNCTIONBUFFSIZE];//internal buffer for the play function
-	unsigned short pc; // program counter
+	unsigned short progcount; // program counter
 	unsigned short playspeed;
 	unsigned short playadd;
 	unsigned short initadd;
@@ -92,6 +92,42 @@ unsigned char PopStack(struct cpu* c){
 unsigned char PeekStack(struct cpu* c){
 	return c->RAM[c->s+stackhead];
 }
+
+void PopulateBuffers(struct cpu *c){//fills the play and init buffers so we dont have to spi so much
+	c->progcount = c->initadd;
+	for (unsigned char i = 0; i < 255;i++){
+		//SPI_Transmit(0xFF);//transmit dummy data so we know we arent ahead of the rpi
+		SPI_Transmit(READ);
+		SPI_Transmit((c->progcount >>8) & 0xFF);
+		SPI_Transmit(c->progcount & 0xFF);
+		SPI_Transmit(0xFF);//dummy data so we can get the requested information back on the next cycle
+		c->initbuff[i] = SPI_ServantReceive();
+		c->progcount+=1;
+	}//get the first 255 bytes for the init buffer
+	//SPI_Transmit(0xFF);//transmit dummy data so we know we arent ahead of the rpi
+	SPI_Transmit(READ);
+	SPI_Transmit((c->progcount >>8) & 0xFF);
+	SPI_Transmit(c->progcount & 0xFF);
+	SPI_Transmit(0xFF);//dummy data so we can get the requested information back on the next cycle
+	c->initbuff[255] = SPI_ServantReceive();//gets the last byte for the buffer
+	c->progcount = c->playadd;
+	for (unsigned char i = 0; i < 255;i++){
+		//SPI_Transmit(0xFF);//transmit dummy data so we know we arent ahead of the rpi
+		SPI_Transmit(READ);
+		SPI_Transmit((c->progcount >>8) & 0xFF);
+		SPI_Transmit(c->progcount & 0xFF);
+		SPI_Transmit(0xFF);//dummy data so we can get the requested information back on the next cycle
+		c->playbuff[i] = SPI_ServantReceive();
+		c->progcount+=1;
+	}//get the first 255 bytes for the play buffer
+	//SPI_Transmit(0xFF);//transmit dummy data so we know we arent ahead of the rpi
+	SPI_Transmit(READ);
+	SPI_Transmit((c->progcount >>8) & 0xFF);
+	SPI_Transmit(c->progcount & 0xFF);
+	SPI_Transmit(0xFF);//dummy data so we can get the requested information back on the next cycle
+	c->initbuff[255] = SPI_ServantReceive();//gets the last byte
+}
+
 void InitCpu(struct cpu* c){
 	c->s = 0xFF;//stack grows downwards
 	c->status = 0;
@@ -109,8 +145,9 @@ void InitCpu(struct cpu* c){
 	c->playadd += SPI_ServantReceive() << 8;
 	c->playspeed = SPI_ServantReceive();
 	c->playspeed += SPI_ServantReceive() << 8;
-	c->pc = c->initadd;
+	c->progcount = c->initadd;
 	c->clocks = 0;
+	PopulateBuffers(c);
 	c->state = running;
 }
 unsigned char ReadMemory(struct cpu *c, unsigned short pos){
@@ -124,34 +161,17 @@ unsigned char ReadMemory(struct cpu *c, unsigned short pos){
 	else if (pos >= c->initadd && pos < c->initadd+256){
 		return c->initbuff[pos-c->initadd];
 	}
-	return 0x00;
-}
-void PopulateBuffers(struct cpu *c){//fills the play and init buffers so we dont have to spi so much
-	c->pc = c->initadd;
-	for (unsigned char i = 0; i < 255;i++){
+	else{
+		SPI_Transmit(0xFF);//transmit dummy data so we know we arent ahead of the rpi
 		SPI_Transmit(READ);
-		SPI_Transmit((c->pc >>8) & 0xFF);
-		SPI_Transmit(c->pc & 0xFF);
-		c->initbuff[i] = SPI_ServantReceive();
-		c->pc++;
-	}//get the first 255 bytes for the init buffer
-	SPI_Transmit(READ);
-	SPI_Transmit((c->pc >>8) & 0xFF);
-	SPI_Transmit(c->pc & 0xFF);
-	c->initbuff[255] = SPI_ServantReceive();//gets the last byte for the buffer
-	c->pc = c->playadd;
-	for (unsigned char i = 0; i < 255;i++){
-		SPI_Transmit(READ);
-		SPI_Transmit((c->pc >>8) & 0xFF);
-		SPI_Transmit(c->pc & 0xFF);
-		c->playbuff[i] = SPI_ServantReceive();
-		c->pc++;
-	}//get the first 255 bytes for the play buffer
-	SPI_Transmit(READ);
-	SPI_Transmit((c->pc >>8) & 0xFF);
-	SPI_Transmit(c->pc & 0xFF);
-	c->initbuff[255] = SPI_ServantReceive();//gets the last byte
+		SPI_Transmit((pos >>8) & 0xFF);
+		SPI_Transmit(pos & 0xFF);
+		SPI_Transmit(0xFF);//dummy data so we can get the requested information back on the next cycle
+		return SPI_ServantReceive();
+	}
 }
+
+
 void WriteMemory(struct cpu *c, unsigned short pos, unsigned char val){//writes to certain memory addresses
 	if (pos <= mirrorhead){//write to wam
 		pos = pos % ramsize;
@@ -161,27 +181,39 @@ void WriteMemory(struct cpu *c, unsigned short pos, unsigned char val){//writes 
 	if (pos >= 0x4000 && pos <= 0x4017){//apu write
 		APUWrite(&(c->a),val,pos & 0xFF);
 	}
+	else{
+		SPI_Transmit(0xFF);//transmit dummy data so we know we arent ahead of the rpi
+		SPI_Transmit(WRITE);
+		SPI_Transmit((pos >> 8) & 0xFF);
+		SPI_Transmit(pos & 0xFF);
+		SPI_Transmit(val);
+	}
 	
 }
 void FetchInstruction(struct cpu* c){
-	if (c->pc >= c->initadd && c->pc < c->initadd+FUNCTIONBUFFSIZE-3){
-		c->instbuffer[0] = c->initbuff[c->pc-c->initadd];
-		c->instbuffer[1] = c->initbuff[c->pc-c->initadd+1];
-		c->instbuffer[2] = c->initbuff[c->pc-c->initadd+2];
+	/*if (c->progcount >= c->initadd && c->progcount < c->initadd+FUNCTIONBUFFSIZE-3){
+		c->instbuffer[0] = c->initbuff[c->progcount-c->initadd];
+		c->instbuffer[1] = c->initbuff[c->progcount-c->initadd+1];
+		c->instbuffer[2] = c->initbuff[c->progcount-c->initadd+2];
 		return;
 	}
-	if (c->pc >= c->playadd && c->pc < c->playadd+FUNCTIONBUFFSIZE-3){
-		c->instbuffer[0] = c->initbuff[c->pc-c->playadd];
-		c->instbuffer[1] = c->initbuff[c->pc-c->playadd+1];
-		c->instbuffer[2] = c->initbuff[c->pc-c->playadd+2];
+	if (c->progcount >= c->playadd && c->progcount < c->playadd+FUNCTIONBUFFSIZE-3){
+		c->instbuffer[0] = c->initbuff[c->progcount-c->playadd];
+		c->instbuffer[1] = c->initbuff[c->progcount-c->playadd+1];
+		c->instbuffer[2] = c->initbuff[c->progcount-c->playadd+2];
 		return;
-	}
+	}*/
+	//SPI_Transmit(0xFF);//transmit dummy data so we know we arent ahead of the rpi
 	SPI_Transmit(FETCH);
-	SPI_Transmit((c->pc >>8) & 0xFF);
-	SPI_Transmit(c->pc & 0xFF);
+	SPI_Transmit((c->progcount >>8) & 0xFF);
+	SPI_Transmit(c->progcount & 0xFF);
+	SPI_Transmit(0xFF);//dummy data so we can get the requested information back on the next cycle
 	c->instbuffer[0] = SPI_ServantReceive();
 	c->instbuffer[1] = SPI_ServantReceive();
 	c->instbuffer[2] = SPI_ServantReceive();
+	SPI_Transmit(c->instbuffer[0]);
+	SPI_Transmit(c->instbuffer[1]);
+	SPI_Transmit(c->instbuffer[2]);
 }
 void ADCFunction(struct cpu* c, unsigned char inc){
 	unsigned short sum;
@@ -217,57 +249,57 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			c->acc = c->acc | ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x01://zeropage
 			c->acc = c->acc | c->RAM[c->instbuffer[1]];
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x02://immediate
 			c->acc = c->acc | c->instbuffer[1];
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x03://absolute
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 			c->acc = c->acc | ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x04://indirect y
 			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
 			c->acc = c->acc | ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x05://zeropage x
 			cpos = c->instbuffer[1] + c->x;
 			c->acc = c->acc | c->RAM[cpos];
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x06://absolute y
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
 			c->acc = c->acc | ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x07:
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
 			c->acc = c->acc | ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			default:
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			break;
 		}
 		break;
@@ -279,57 +311,57 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			c->acc = c->acc & ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x01://zeropage
 			c->acc = c->acc & c->RAM[c->instbuffer[1]];
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x02://immediate
 			c->acc = c->acc & c->instbuffer[1];
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x03://absolute
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 			c->acc = c->acc & ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x04://indirect y
 			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
 			c->acc = c->acc & ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x05://zeropage x
 			cpos = c->instbuffer[1] + c->x;
 			c->acc = c->acc & c->RAM[cpos];
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x06://absolute y
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
 			c->acc = c->acc & ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x07:
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
 			c->acc = c->acc & ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			default:
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			break;
 		}
 		break;
@@ -341,57 +373,57 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			c->acc = c->acc ^ ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x01://zeropage
 			c->acc = c->acc ^ c->RAM[c->instbuffer[1]];
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x02://immediate
 			c->acc = c->acc ^ c->instbuffer[1];
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x03://absolute
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 			c->acc = c->acc ^ ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x04://indirect y
 			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
 			c->acc = c->acc ^ ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x05://zeropage x
 			cpos = c->instbuffer[1] + c->x;
 			c->acc = c->acc ^ c->RAM[cpos];
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x06://absolute y
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
 			c->acc = c->acc ^ ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x07:
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
 			c->acc = c->acc ^ ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			default:
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			break;
 		}
 		break;
@@ -403,43 +435,43 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			spos = (c->RAM[cpos+1] << 8) + c->RAM[cpos];
 			cpos = ReadMemory(c,spos);
 			ADCFunction(c,cpos);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x01://zeropage
 			ADCFunction(c,c->RAM[c->instbuffer[1]]);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x02://immediate
 			ADCFunction(c,c->instbuffer[1]);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x03://absolute
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 			ADCFunction(c, ReadMemory(c,spos));
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x04://indirect y
 			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
 			ADCFunction(c, ReadMemory(c,spos));
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x05://zeropage x
 			cpos = c->instbuffer[1] + c->x;
 			ADCFunction(c, c->RAM[cpos]);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x06://absolute y
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
 			ADCFunction(c, ReadMemory(c,spos));
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x07:
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
 			ADCFunction(c, ReadMemory(c,spos));
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			default:
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			break;
 		}
 		break;
@@ -450,43 +482,43 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			cpos = c->instbuffer[1] + c->x;
 			spos = (c->RAM[cpos+1] << 8) + c->RAM[cpos];
 			WriteMemory(c,spos,c->acc);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x01://zeropage
 			WriteMemory(c,c->instbuffer[1],c->acc);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x02://immediate
 				//illegal
-				c->pc += 2;
+				c->progcount += 2;
 				break;
 			case 0x03://absolute
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 			WriteMemory(c,spos,c->acc);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x04://indirect y
 			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
 			WriteMemory(c,spos,c->acc);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x05://zeropage x
 			cpos = c->instbuffer[1] + c->x;
 			WriteMemory(c,cpos,c->acc);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x06://absolute y
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
 			WriteMemory(c,spos,c->acc);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x07://absolute x
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
 			WriteMemory(c,spos,c->acc);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			default:
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			break;
 		}
 		break;
@@ -498,57 +530,57 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			c->acc = ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x01://zeropage
 			c->acc = ReadMemory(c,c->instbuffer[1]);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x02://immediate
 			c->acc = c->instbuffer[1];
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x03://absolute
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 			c->acc = ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x04://indirect y
 			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
 			c->acc = ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x05://zeropage x
 			cpos = c->instbuffer[1] + c->x;
 			c->acc = ReadMemory(c,cpos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x06://absolute y
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
 			c->acc = ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x07://absolute x
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
 			c->acc = ReadMemory(c,spos);
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			default:
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			break;
 		}
 		break;
@@ -561,21 +593,21 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			SetPBit(c,NFLAG,temp & 0x80);
 			SetPBit(c,ZFLAG, temp == 0x00);
 			SetPBit(c,CFLAG, temp >= 0);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x01://zeropage
 			temp = c->acc - ReadMemory(c,c->instbuffer[1]);
 			SetPBit(c,NFLAG,temp & 0x80);
 			SetPBit(c,ZFLAG, temp == 0x00);
 			SetPBit(c,CFLAG, temp >= 0);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x02://immediate
 			temp = c->acc - c->instbuffer[1];
 			SetPBit(c,NFLAG,temp & 0x80);
 			SetPBit(c,ZFLAG, temp == 0x00);
 			SetPBit(c,CFLAG, temp >= 0);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x03://absolute
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
@@ -583,7 +615,7 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			SetPBit(c,NFLAG,temp & 0x80);
 			SetPBit(c,ZFLAG, temp == 0x00);
 			SetPBit(c,CFLAG, temp >= 0);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x04://indirect y
 			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
@@ -591,7 +623,7 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			SetPBit(c,NFLAG,temp & 0x80);
 			SetPBit(c,ZFLAG, temp == 0x00);
 			SetPBit(c,CFLAG, temp >= 0);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x05://zeropage x
 			cpos = c->instbuffer[1] + c->x;
@@ -599,7 +631,7 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			SetPBit(c,NFLAG,temp & 0x80);
 			SetPBit(c,ZFLAG, temp == 0x00);
 			SetPBit(c,CFLAG, temp >= 0);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x06://absolute y
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
@@ -607,7 +639,7 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			SetPBit(c,NFLAG,temp & 0x80);
 			SetPBit(c,ZFLAG, temp == 0x00);
 			SetPBit(c,CFLAG, temp >= 0);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x07://absolute x
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
@@ -615,10 +647,10 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			SetPBit(c,NFLAG,temp & 0x80);
 			SetPBit(c,ZFLAG, temp == 0x00);
 			SetPBit(c,CFLAG, temp >= 0);
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			default:
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			break;
 		}
 		break;
@@ -629,43 +661,43 @@ void RunSubset1Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			spos = (c->RAM[cpos+1] << 8) + c->RAM[cpos];
 			cpos = ReadMemory(c,spos);
 			ADCFunction(c,~cpos);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x01://zeropage
 			ADCFunction(c,~c->RAM[c->instbuffer[1]]);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x02://immediate
 			ADCFunction(c,~c->instbuffer[1]);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x03://absolute
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 			ADCFunction(c, ~ReadMemory(c,spos));
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x04://indirect y
 			spos = (ReadMemory(c,c->instbuffer[1]+1) << 8) + ReadMemory(c,c->instbuffer[1])+c->y;
 			ADCFunction(c, ~ReadMemory(c,spos));
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x05://zeropage x
 			cpos = c->instbuffer[1] + c->x;
 			ADCFunction(c, ~c->RAM[cpos]);
-			c->pc += 2;
+			c->progcount += 2;
 			break;
 			case 0x06://absolute y
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
 			ADCFunction(c, ~ReadMemory(c,spos));
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			case 0x07:
 			spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
 			ADCFunction(c, ~ReadMemory(c,spos));
-			c->pc += 3;
+			c->progcount += 3;
 			break;
 			default:
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			break;
 		}
 		break;
@@ -685,7 +717,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			switch(amode){
 				case 0://immediate
 					//this shouldnt happen apparently
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 1://zeropage
 					utemp = c->RAM[c->instbuffer[1]];
@@ -694,14 +726,14 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,utemp&0x80);
 					c->RAM[c->instbuffer[1]] = utemp;
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 2://accumulator
 					SetPBit(c,CFLAG,c->acc&0x80);
 					c->acc = c->acc<<1;
 					SetPBit(c,ZFLAG,!c->acc);
 					SetPBit(c,NFLAG,c->acc&0x80);
-					c->pc+= 1;
+					c->progcount+= 1;
 					break;
 				case 3://absolute
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
@@ -711,10 +743,10 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,utemp&0x80);
 					WriteMemory(c,spos,utemp);
-					c->pc+= 3;
+					c->progcount+= 3;
 					break;
 				case 4://this case is illegal
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 5://zero page, x
 					cpos = c->instbuffer[1] + c->x;
@@ -724,10 +756,10 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,utemp&0x80);
 					c->RAM[cpos] = utemp;
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 6://this case is illegal
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 7://absolute, x
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
@@ -737,7 +769,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,utemp&0x80);
 					WriteMemory(c,spos,utemp);
-					c->pc+= 3;
+					c->progcount+= 3;
 					break;
 			}	
 			break;
@@ -745,7 +777,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			switch(amode){
 				case 0://immediate
 				//this shouldnt happen apparently
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 1://zeropage
 					utemp = c->RAM[c->instbuffer[1]];
@@ -756,7 +788,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,utemp&0x80);
 					c->RAM[c->instbuffer[1]] = utemp;
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 2://accumulator
 					utemp = GetPBit(c,CFLAG);
@@ -765,7 +797,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					c->acc |= utemp;
 					SetPBit(c,ZFLAG,!c->acc);
 					SetPBit(c,NFLAG,c->acc&0x80);
-					c->pc+= 1;
+					c->progcount+= 1;
 					break;
 				case 3://absolute
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
@@ -777,10 +809,10 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,utemp&0x80);
 					WriteMemory(c,spos,utemp);
-					c->pc+= 3;
+					c->progcount+= 3;
 					break;
 				case 4://this case is illegal
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 5://zero page, x
 					cpos = c->instbuffer[1] + c->x;
@@ -792,10 +824,10 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,utemp&0x80);
 					c->RAM[cpos] = utemp;
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 6://this case is illegal
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 7://absolute, x
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
@@ -807,7 +839,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,utemp&0x80);
 					WriteMemory(c,spos,utemp);
-					c->pc+= 3;
+					c->progcount+= 3;
 				break;
 			}
 			break;
@@ -815,7 +847,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			switch(amode){
 				case 0://immediate
 					//this shouldnt happen apparently
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 1://zeropage
 					utemp = c->RAM[c->instbuffer[1]];
@@ -824,14 +856,14 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,0);
 					c->RAM[c->instbuffer[1]] = utemp;
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 2://accumulator
 					SetPBit(c,CFLAG,c->acc&0x01);
 					c->acc = c->acc>>1;
 					SetPBit(c,ZFLAG,!c->acc);
 					SetPBit(c,NFLAG,0);
-					c->pc+= 1;
+					c->progcount+= 1;
 					break;
 				case 3://absolute
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
@@ -841,10 +873,10 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,0);
 					WriteMemory(c,spos,utemp);
-					c->pc+= 3;
+					c->progcount+= 3;
 					break;
 				case 4://this case is illegal
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 5://zero page, x
 					cpos = c->instbuffer[1] + c->x;
@@ -854,10 +886,10 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,0);
 					c->RAM[cpos] = utemp;
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 6://this case is illegal
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 7://absolute, x
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
@@ -867,7 +899,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,0);
 					WriteMemory(c,spos,utemp);
-					c->pc+= 3;
+					c->progcount+= 3;
 					break;
 			}
 			break;
@@ -875,7 +907,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			switch(amode){
 				case 0://immediate
 					//this shouldnt happen apparently
-					c->pc+= 2;
+					c->progcount+= 2;
 				break;
 				case 1://zeropage
 					utemp = c->RAM[c->instbuffer[1]];
@@ -886,7 +918,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,0);
 					c->RAM[c->instbuffer[1]] = utemp;
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 2://accumulator
 					SetPBit(c,CFLAG,c->acc&0x01);
@@ -895,7 +927,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					c->acc |= cpos << 7;
 					SetPBit(c,ZFLAG,!c->acc);
 					SetPBit(c,NFLAG,0);
-					c->pc+= 1;
+					c->progcount+= 1;
 					break;
 				case 3://absolute
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
@@ -907,10 +939,10 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,0);
 					WriteMemory(c,spos,utemp);
-					c->pc+= 3;
+					c->progcount+= 3;
 					break;
 				case 4://this case is illegal
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 5://zero page, x
 					cpos = c->instbuffer[1] + c->x;
@@ -922,10 +954,10 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,0);
 					c->RAM[cpos] = utemp;
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 6://this case is illegal
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 7://absolute, x
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
@@ -937,7 +969,7 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,ZFLAG,!utemp);
 					SetPBit(c,NFLAG,0);
 					WriteMemory(c,spos,utemp);
-					c->pc+= 3;
+					c->progcount+= 3;
 					break;
 			}
 			break;
@@ -945,40 +977,40 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 			switch (amode){//addressing mode
 					case 0x00://indirect x zeropage
 					//illegal
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 0x01://zeropage
 					WriteMemory(c,c->instbuffer[1],c->x);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x02://immediate
 					//illegal
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x03://absolute
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 					WriteMemory(c,spos,c->x);
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				case 0x04://indirect y
 					//illegal
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x05://zeropage y
 					cpos = c->instbuffer[1] + c->y;
 					WriteMemory(c,cpos,c->x);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x06://absolute y
 					//illegal
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				case 0x07://absolute x
 					//illegal
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				default:
-					c->pc++;
+					c->progcount = c->progcount + 1;
 					break;
 			}
 			break;
@@ -988,49 +1020,49 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					c->x = c->instbuffer[1];
 					SetPBit(c,NFLAG,c->x & 0x80);
 					SetPBit(c,ZFLAG, c->x == 0x00);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x01://zeropage
 					c->x = ReadMemory(c,c->instbuffer[1]);
 					SetPBit(c,NFLAG,c->x & 0x80);
 					SetPBit(c,ZFLAG, c->x == 0x00);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x02://accumulator
 					//illegal
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x03://absolute
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 					c->x = ReadMemory(c,spos);
 					SetPBit(c,NFLAG,c->x & 0x80);
 					SetPBit(c,ZFLAG, c->x == 0x00);
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				case 0x04://indirect y
 					//illegal
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x05://zeropage y
 					cpos = c->instbuffer[1] + c->y;
 					c->x = ReadMemory(c,cpos);
 					SetPBit(c,NFLAG,c->x & 0x80);
 					SetPBit(c,ZFLAG, c->x == 0x00);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x06://absolute y
 					//illegal
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				case 0x07://absolute y
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->y;
 					c->x = ReadMemory(c,spos);
 					SetPBit(c,NFLAG,c->x & 0x80);
 					SetPBit(c,ZFLAG, c->x == 0x00);
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				default:
-					c->pc++;
+					c->progcount = c->progcount + 1;
 					break;
 			}
 			break;
@@ -1045,11 +1077,11 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					WriteMemory(c,c->instbuffer[1],temp);
 					SetPBit(c,NFLAG,temp& 0x80);
 					SetPBit(c,ZFLAG, temp == 0x00);
-					c->pc += 2;
+					c->progcount += 2;
 				break;
 				case 0x02://acc
 					//illegal
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x03://absolute
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
@@ -1058,11 +1090,11 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					WriteMemory(c,spos,temp);
 					SetPBit(c,NFLAG,temp& 0x80);
 					SetPBit(c,ZFLAG, temp == 0x00);
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				case 0x04:
 					//illegal
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x05://zeropage x
 					cpos = c->instbuffer[1] + c->x;
@@ -1071,11 +1103,11 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					WriteMemory(c,cpos,temp);
 					SetPBit(c,NFLAG,temp& 0x80);
 					SetPBit(c,ZFLAG, temp == 0x00);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x06://absolute y
 					//illegal
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				case 0x07://absolute x
 					//illegal
@@ -1085,10 +1117,10 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					WriteMemory(c,spos,temp);
 					SetPBit(c,NFLAG,temp& 0x80);
 					SetPBit(c,ZFLAG, temp == 0x00);
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				default:
-					c->pc++;
+					c->progcount = c->progcount + 1;
 					break;
 			}
 			break;
@@ -1103,11 +1135,11 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 				WriteMemory(c,c->instbuffer[1],temp);
 				SetPBit(c,NFLAG,temp& 0x80);
 				SetPBit(c,ZFLAG, temp == 0x00);
-				c->pc += 2;
+				c->progcount += 2;
 				break;
 			case 0x02://acc
 				//illegal
-				c->pc += 2;
+				c->progcount += 2;
 				break;
 			case 0x03://absolute
 				spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
@@ -1116,11 +1148,11 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 				WriteMemory(c,spos,temp);
 				SetPBit(c,NFLAG,temp& 0x80);
 				SetPBit(c,ZFLAG, temp == 0x00);
-				c->pc += 3;
+				c->progcount += 3;
 				break;
 			case 0x04:
 				//illegal
-				c->pc += 2;
+				c->progcount += 2;
 				break;
 			case 0x05://zeropage x
 				cpos = c->instbuffer[1] + c->x;
@@ -1129,11 +1161,11 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 				WriteMemory(c,cpos,temp);
 				SetPBit(c,NFLAG,temp& 0x80);
 				SetPBit(c,ZFLAG, temp == 0x00);
-				c->pc += 2;
+				c->progcount += 2;
 				break;
 			case 0x06://absolute y
 				//illegal
-				c->pc += 3;
+				c->progcount += 3;
 				break;
 			case 0x07://absolute x
 				//illegal
@@ -1143,15 +1175,15 @@ void RunSubset2Instructions(struct cpu* c, unsigned char op, unsigned char amode
 				WriteMemory(c,spos,temp);
 				SetPBit(c,NFLAG,temp& 0x80);
 				SetPBit(c,ZFLAG, temp == 0x00);
-				c->pc += 3;
+				c->progcount += 3;
 				break;
 			default:
-				c->pc++;
+				c->progcount = c->progcount + 1;
 				break;
 		}
 		break;
 		default:
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			break;
 	}
 }
@@ -1166,7 +1198,7 @@ void RunSubset3Instructions(struct cpu* c, unsigned char op, unsigned char amode
 		case 0x01://BIT
 			switch(amode){
 				case 0://immediate
-					c->pc+= 2;//illegal
+					c->progcount+= 2;//illegal
 					break;
 				case 1://zero page
 					utemp = ReadMemory(c,c->instbuffer[1]);
@@ -1174,7 +1206,7 @@ void RunSubset3Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,NFLAG,utemp & 0x80);
 					utemp = utemp & c->acc;
 					SetPBit(c,ZFLAG,utemp);
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
 				case 3://absolute
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
@@ -1183,28 +1215,53 @@ void RunSubset3Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,NFLAG,utemp & 0x80);
 					utemp = utemp & c->acc;
 					SetPBit(c,ZFLAG,utemp);
-					c->pc+=3;
+					c->progcount+=3;
 					break;
 				case 5://zero page
-					c->pc+= 2;//illegal operation
+					c->progcount+= 2;//illegal operation
 					break;
 				case 7:
-					c->pc+= 3;//illegal
+					c->progcount+= 3;//illegal
 					break;
 				default:
-					c->pc++;//illegal
+					c->progcount = c->progcount + 1;//illegal
 					break;
 			}
 			break;
 		case 0x02://JMP
 			switch(amode){
 				case 0://immediate
-					c->pc+= 2;//illegal
+					c->progcount+= 2;//illegal
 					break;
 				case 1://zero page
 					//illegal
-					c->pc+= 2;
+					c->progcount+= 2;
 					break;
+				case 3://indirect
+					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
+					//spos = ReadMemory(c,spos);
+					c->progcount = spos;
+					break;
+				case 5://zero page
+					c->progcount+= 2;//illegal operation
+					break;
+				case 7:
+					c->progcount+= 3;//illegal
+					break;
+				default:
+					c->progcount = c->progcount + 1;//illegal
+					break;
+			}
+			break;
+		case 0x03://JMP
+			switch(amode){
+				case 0://immediate
+				c->progcount+= 2;//illegal
+				break;
+				case 1://zero page
+				//illegal
+				c->progcount+= 2;
+				break;
 				case 3://indirect
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 					//spos = ReadMemory(c,spos);
@@ -1214,43 +1271,16 @@ void RunSubset3Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					else{
 						spos = (ReadMemory(c,spos) + (ReadMemory(c,spos & 0xFF00) << 8) );//replicates a bug the 6502 has when fetching an indirect address at a page boundary
 					}
-					c->pc = spos;
-					c->pc+= 3;
+					c->progcount = spos;
 					break;
 				case 5://zero page
-					c->pc+= 2;//illegal operation
-					break;
-				case 7:
-					c->pc+= 3;//illegal
-					break;
-				default:
-					c->pc++;//illegal
-					break;
-			}
-			break;
-		case 0x03://JMP
-			switch(amode){
-				case 0://immediate
-				c->pc+= 2;//illegal
-				break;
-				case 1://zero page
-				//illegal
-				c->pc+= 2;
-				break;
-				case 3://indirect
-				spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
-				//spos = ReadMemory(c,spos);
-				c->pc = spos;
-				c->pc+= 3;
-				break;
-				case 5://zero page
-				c->pc+= 2;//illegal operation
+				c->progcount+= 2;//illegal operation
 				break;
 				case 7:
-				c->pc+= 3;//illegal
+				c->progcount+= 3;//illegal
 				break;
 				default:
-				c->pc++;//illegal
+				c->progcount = c->progcount + 1;//illegal
 				break;
 			}
 			break;
@@ -1261,36 +1291,36 @@ void RunSubset3Instructions(struct cpu* c, unsigned char op, unsigned char amode
 				break;
 				case 0x01://zeropage
 				WriteMemory(c,c->instbuffer[1],c->y);
-				c->pc += 2;
+				c->progcount += 2;
 				break;
 				case 0x02://immediate
 				//illegal
-				c->pc += 2;
+				c->progcount += 2;
 				break;
 				case 0x03://absolute
 				spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 				WriteMemory(c,spos,c->y);
-				c->pc += 3;
+				c->progcount += 3;
 				break;
 				case 0x04://indirect y
 				//illegal
-				c->pc += 2;
+				c->progcount += 2;
 				break;
 				case 0x05://zeropage x
 					cpos = c->instbuffer[1] + c->x;
 					WriteMemory(c,cpos,c->y);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x06://absolute y
 				//illegal
-				c->pc += 3;
+				c->progcount += 3;
 				break;
 				case 0x07://absolute x
 				//illegal
-				c->pc += 3;
+				c->progcount += 3;
 				break;
 				default:
-				c->pc++;
+				c->progcount = c->progcount + 1;
 				break;
 			}
 			break;
@@ -1300,49 +1330,49 @@ void RunSubset3Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					c->y = c->instbuffer[1];
 					SetPBit(c,NFLAG,c->y & 0x80);
 					SetPBit(c,ZFLAG, c->y == 0x00);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x01://zeropage
 					c->y = ReadMemory(c,c->instbuffer[1]);
 					SetPBit(c,NFLAG,c->y & 0x80);
 					SetPBit(c,ZFLAG, c->y == 0x00);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x02://accumulator
 					//illegal
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x03://absolute
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
 					c->x = ReadMemory(c,spos);
 					SetPBit(c,NFLAG,c->x & 0x80);
 					SetPBit(c,ZFLAG, c->x == 0x00);
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				case 0x04://indirect y
 					//illegal
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x05://zeropage x
 					cpos = c->instbuffer[1] + c->x;
 					c->y = ReadMemory(c,cpos);
 					SetPBit(c,NFLAG,c->y & 0x80);
 					SetPBit(c,ZFLAG, c->y == 0x00);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x06://absolute y
 					//illegal
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				case 0x07://absolute x
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1] + c->x;
 					c->y = ReadMemory(c,spos);
 					SetPBit(c,NFLAG,c->y & 0x80);
 					SetPBit(c,ZFLAG, c->y == 0x00);
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				default:
-					c->pc++;
+					c->progcount = c->progcount + 1;
 					break;
 				}
 				break;
@@ -1353,17 +1383,17 @@ void RunSubset3Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,NFLAG,temp & 0x80);
 					SetPBit(c,ZFLAG, temp == 0x00);
 					SetPBit(c,CFLAG, temp >= 0);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x01://zeropage
 					temp = c->y - ReadMemory(c,c->instbuffer[1]);
 					SetPBit(c,NFLAG,temp & 0x80);
 					SetPBit(c,ZFLAG, temp == 0x00);
 					SetPBit(c,CFLAG, temp >= 0);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x02:
-					c->pc += 2;//illegal
+					c->progcount += 2;//illegal
 					break;
 				case 0x03://absolute
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
@@ -1371,26 +1401,26 @@ void RunSubset3Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,NFLAG,temp & 0x80);
 					SetPBit(c,ZFLAG, temp == 0x00);
 					SetPBit(c,CFLAG, temp >= 0);
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				case 0x04://indirect y
 					//illegal
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x05://zeropage x
 					//illegal
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x06://absolute y
 					//illegal
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				case 0x07://absolute x
 					//illegal
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				default:
-					c->pc++;
+					c->progcount = c->progcount + 1;
 					break;
 			}
 			break;
@@ -1401,17 +1431,17 @@ void RunSubset3Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,NFLAG,temp & 0x80);
 					SetPBit(c,ZFLAG, temp == 0x00);
 					SetPBit(c,CFLAG, temp >= 0);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x01://zeropage
 					temp = c->x - ReadMemory(c,c->instbuffer[1]);
 					SetPBit(c,NFLAG,temp & 0x80);
 					SetPBit(c,ZFLAG, temp == 0x00);
 					SetPBit(c,CFLAG, temp >= 0);
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x02:
-					c->pc += 2;//illegal
+					c->progcount += 2;//illegal
 					break;
 				case 0x03://absolute
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
@@ -1419,31 +1449,31 @@ void RunSubset3Instructions(struct cpu* c, unsigned char op, unsigned char amode
 					SetPBit(c,NFLAG,temp & 0x80);
 					SetPBit(c,ZFLAG, temp == 0x00);
 					SetPBit(c,CFLAG, temp >= 0);
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				case 0x04://indirect y
 					//illegal
-					c->pc += 2;
+					c->progcount += 2;
 				break;
 				case 0x05://zeropage x
 					//illegal
-					c->pc += 2;
+					c->progcount += 2;
 					break;
 				case 0x06://absolute y
 					//illegal
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				case 0x07://absolute x
 					//illegal
-					c->pc += 3;
+					c->progcount += 3;
 					break;
 				default:
-					c->pc++;
+					c->progcount = c->progcount + 1;
 					break;
 			}
 			break;
 		default:
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			break;
 	}
 }
@@ -1457,74 +1487,74 @@ unsigned char RunConditionalBranches(struct cpu* c, unsigned char opcode){
 	unsigned char utemp = 0;//used for unsigned temporary math
 	switch (opcode){
 		case 0x10://BPL
-			c->pc+= 2;//pc is incremented before any relative addressing is done.
+			c->progcount+= 2;//pc is incremented before any relative addressing is done.
 			if (!GetPBit(c,NFLAG)){
 				temp = c->instbuffer[1];
-				spos = c->pc + temp;
-				c->pc = spos;
+				spos = c->progcount + temp;
+				c->progcount = spos;
 			}
 			return 1;
 			break;
 		case 0x30: //BMI
-			c->pc+= 2;
+			c->progcount+= 2;
 			if (GetPBit(c,NFLAG)){
 				temp = c->instbuffer[1];
-				spos = c->pc + temp;
-				c->pc = spos;
+				spos = c->progcount + temp;
+				c->progcount = spos;
 			}
 			return 1;
 			break;
 		case 0x50://BVC
-			c->pc+= 2;
+			c->progcount+= 2;
 			if (!GetPBit(c,VFLAG)){
 				temp = c->instbuffer[1];
-				spos = c->pc + temp;
-				c->pc = spos;
+				spos = c->progcount + temp;
+				c->progcount = spos;
 			}
 			return 1;
 			break;
 		case 0x70://BVS
-			c->pc+= 2;
+			c->progcount+= 2;
 			if (GetPBit(c,VFLAG)){
 				temp = c->instbuffer[1];
-				spos = c->pc + temp;
-				c->pc = spos;
+				spos = c->progcount + temp;
+				c->progcount = spos;
 			}
 			return 1;
 			break;
 		case 0x90://BCC
-			c->pc+= 2;
+			c->progcount+= 2;
 			if (!GetPBit(c,CFLAG)){
 				temp = c->instbuffer[1];
-				spos = c->pc + temp;
-				c->pc = spos;
+				spos = c->progcount + temp;
+				c->progcount = spos;
 			}
 			return 1;
 			break;
 		case 0xB0://BCS
-			c->pc+= 2;
+			c->progcount+= 2;
 			if (GetPBit(c,CFLAG)){
 				temp = c->instbuffer[1];
-				spos = c->pc + temp;
-				c->pc = spos;
+				spos = c->progcount + temp;
+				c->progcount = spos;
 			}
 			return 1;
 			break;
 		case 0xD0://BNE
-			c->pc+= 2;
+			c->progcount+= 2;
 			if (!GetPBit(c,ZFLAG)){
 				temp = c->instbuffer[1];
-				spos = c->pc + temp;
-				c->pc = spos;
+				spos = c->progcount + temp;
+				c->progcount = spos;
 			}
 			return 1;
 			break;
 		case 0xF0://BEQ
-			c->pc+= 2;
+			c->progcount+= 2;
 			if (GetPBit(c,CFLAG)){
 				temp = c->instbuffer[1];
-				spos = c->pc + temp;
-				c->pc = spos;
+				spos = c->progcount + temp;
+				c->progcount = spos;
 			}
 			return 1;
 			break;
@@ -1543,22 +1573,22 @@ unsigned char RunInterruptBranches(struct cpu* c, unsigned char opcode){
 	switch (opcode){
 		case 0x00://BRK
 			//this instructons probably shouldnt ever happen
-			c->pc++;
-			PushStack(c,(c->pc>>8)&0xFF);
-			PushStack(c,c->pc&0xFF);
+			c->progcount = c->progcount + 1;
+			PushStack(c,(c->progcount>>8)&0xFF);
+			PushStack(c,c->progcount&0xFF);
 			PushStack(c,c->status);
 			spos = (ReadMemory(c,0xFFFF) << 8)+ReadMemory(c,0xFFFE);
-			c->pc = spos;
+			c->progcount = spos;
 			SetPBit(c,BFLAG,1);
 			return 1;
 			break;
 		case 0x20://JSR abs
-			spos = c->pc + 2;
+			spos = c->progcount + 2;
 			PushStack(c,(spos>>8)&0xFF);
 			PushStack(c,spos&0xFF);
 			PushStack(c,c->status);
 			spos = (c->instbuffer[2]<<8) + c->instbuffer[1];
-			c->pc = spos;
+			c->progcount = spos;
 			c->depth++;
 			return 1;
 			break;
@@ -1567,7 +1597,7 @@ unsigned char RunInterruptBranches(struct cpu* c, unsigned char opcode){
 			c->status = PopStack(c);
 			spos = PopStack(c);
 			spos += PopStack(c) << 8;
-			c->pc = spos;
+			c->progcount = spos;
 			return 1;
 			break;
 		case 0x60://RTS
@@ -1575,7 +1605,7 @@ unsigned char RunInterruptBranches(struct cpu* c, unsigned char opcode){
 				spos = PopStack(c);
 				spos += PopStack(c) << 8;
 				spos++;
-				c->pc = spos;
+				c->progcount = spos;
 				c->depth--;
 				return 1;
 			}
@@ -1599,131 +1629,131 @@ unsigned char RunSingleByteInstructions(struct cpu* c, unsigned char opcode){
 	switch (opcode){
 		case 0x08://PHP
 			PushStack(c,c->status);
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			return 1;
 			break;
 		case 0x28://PHP
 			c->status = PopStack(c);
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			return 1;
 			break;
 		case 0x48://PHA
 			PushStack(c,c->acc);
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			return 1;
 			break;
 		case 0x68://PLA
 			c->acc = PopStack(c);
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
 			return 1;
 			break;
 		case 0x88://DEY
 			c->y--;
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,NFLAG,c->y & 0x80);
 			SetPBit(c,ZFLAG, c->y == 0x00);
 			return 1;
 			break;
 		case 0xA8://TAY
 			c->y = c->acc;
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,NFLAG,c->y & 0x80);
 			SetPBit(c,ZFLAG, c->y == 0x00);
 			return 1;
 			break;
 		case 0xC8://INY
 			c->y++;
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,NFLAG,c->y & 0x80);
 			SetPBit(c,ZFLAG, c->y == 0x00);
 			return 1;
 			break;
 		case 0xE8://INX
 			c->x++;
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,NFLAG,c->x & 0x80);
 			SetPBit(c,ZFLAG, c->x == 0x00);
 			return 1;
 			break;
 		case 0x18://CLC
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,CFLAG,0);
 			return 1;
 			break;
 		case 0x38://SEC
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,CFLAG,1);
 			return 1;
 			break;
 		case 0x58://CLI
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,IFLAG,0);
 			return 1;
 			break;
 		case 0x78://SEI
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,IFLAG,1);
 			return 1;
 			break;
 		case 0x98://TYA
 			c->acc = c->y;
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
 			return 1;
 			break;
 		case 0xB8://CLV
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,VFLAG,0);
 			return 1;
 			break;
 		case 0xD8://CLD
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,DFLAG,0);
 			return 1;
 			break;
 		case 0xF8://SED
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,DFLAG,1);
 			return 1;
 			break;
 		case 0x8A://TXA
 			c->acc = c->x;
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,NFLAG,c->acc & 0x80);
 			SetPBit(c,ZFLAG, c->acc == 0x00);
 			return 1;
 			break;
 		case 0x9A://TXS
 			c->s = c->x;
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			return 1;
 			break;
 		case 0xAA://TAX
 			c->x = c->acc;
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,NFLAG,c->x & 0x80);
 			SetPBit(c,ZFLAG, c->x == 0x00);
 			return 1;
 			break;
 		case 0xBA://TSX
 			c->x = c->s;
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,NFLAG,c->x & 0x80);
 			SetPBit(c,ZFLAG, c->x == 0x00);
 			return 1;
 			break;
 		case 0xCA://DEX
 			c->x--;
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			SetPBit(c,NFLAG,c->x & 0x80);
 			SetPBit(c,ZFLAG, c->x == 0x00);
 			return 1;
 			break;
 		case 0xEA://NOP
-			c->pc++;
+			c->progcount = c->progcount + 1;
 			return 1;
 			break;
 		default:
@@ -1731,13 +1761,18 @@ unsigned char RunSingleByteInstructions(struct cpu* c, unsigned char opcode){
 			break;
 	}
 }
+
 void RunInstruction(struct cpu* c){
 	FetchInstruction(c);
 	unsigned char inst = c->instbuffer[0];//instructions are indexed in the form "aaabbbcc"
 	//according to http://nparker.llx.com/a2/opcodes.html
 	unsigned char amode = (inst >> 2) & 0b00000111;//addressing mode
 	unsigned char op = (inst >> 5) & 0b00000111;//op code
-	if (RunConditionalBranches(c,c->instbuffer[0]) || RunInterruptBranches(c,c->instbuffer[0]) || RunSingleByteInstructions(c,c->instbuffer[0])){
+	if  (c->instbuffer[0] == 0xFF){
+		PORTC = 0xFF;
+	}
+	else{PORTC = 0x00;}
+	if (RunConditionalBranches(c,inst) || RunInterruptBranches(c,inst) || RunSingleByteInstructions(c,inst)){
 		return;
 	}
 	if ((inst & 0x11) == 0x01){//cc == 01
@@ -1760,7 +1795,6 @@ void TickCpu(struct cpu* c){
 			break;
 		case init:
 			InitCpu(c);
-			PopulateBuffers(c);
 			c->state = waitrpi;
 			break;
 		case running:
