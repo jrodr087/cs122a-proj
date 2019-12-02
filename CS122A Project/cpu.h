@@ -54,7 +54,8 @@ struct cpu
 	signed char acc; //accumulator
 	unsigned char x; //indexing register x
 	unsigned char y; // indexing register y
-	unsigned char temp; //this is testing stuff for the spi
+	unsigned char depth; //counts how many routines have been called
+	unsigned char playing; //1 if we are currently running the play routine
 	
 	unsigned char instbuffer[3]; //buffer for instructions read from spi
 	unsigned char RAM[ramsize];//2KB internal ram
@@ -94,7 +95,9 @@ unsigned char PeekStack(struct cpu* c){
 void InitCpu(struct cpu* c){
 	c->s = 0xFF;//stack grows downwards
 	c->status = 0;
+	c->depth = 0;
 	c->acc = 0;
+	c->playing = 0;
 	c->x = 0;
 	c->y = 0;
 	c->instbuffer[0]=0;
@@ -1445,12 +1448,298 @@ void RunSubset3Instructions(struct cpu* c, unsigned char op, unsigned char amode
 	}
 }
 
+unsigned char RunConditionalBranches(struct cpu* c, unsigned char opcode){
+	//these opcodes dont fit in the 3 c=XX subsets
+	//so we return 1 if one of these opcodes match
+	unsigned char cpos = 0;//used for zero page addressing
+	signed short spos = 0;//used for relative addressing
+	signed char temp = 0; //used for temporary math
+	unsigned char utemp = 0;//used for unsigned temporary math
+	switch (opcode){
+		case 0x10://BPL
+			c->pc+= 2;//pc is incremented before any relative addressing is done.
+			if (!GetPBit(c,NFLAG)){
+				temp = c->instbuffer[1];
+				spos = c->pc + temp;
+				c->pc = spos;
+			}
+			return 1;
+			break;
+		case 0x30: //BMI
+			c->pc+= 2;
+			if (GetPBit(c,NFLAG)){
+				temp = c->instbuffer[1];
+				spos = c->pc + temp;
+				c->pc = spos;
+			}
+			return 1;
+			break;
+		case 0x50://BVC
+			c->pc+= 2;
+			if (!GetPBit(c,VFLAG)){
+				temp = c->instbuffer[1];
+				spos = c->pc + temp;
+				c->pc = spos;
+			}
+			return 1;
+			break;
+		case 0x70://BVS
+			c->pc+= 2;
+			if (GetPBit(c,VFLAG)){
+				temp = c->instbuffer[1];
+				spos = c->pc + temp;
+				c->pc = spos;
+			}
+			return 1;
+			break;
+		case 0x90://BCC
+			c->pc+= 2;
+			if (!GetPBit(c,CFLAG)){
+				temp = c->instbuffer[1];
+				spos = c->pc + temp;
+				c->pc = spos;
+			}
+			return 1;
+			break;
+		case 0xB0://BCS
+			c->pc+= 2;
+			if (GetPBit(c,CFLAG)){
+				temp = c->instbuffer[1];
+				spos = c->pc + temp;
+				c->pc = spos;
+			}
+			return 1;
+			break;
+		case 0xD0://BNE
+			c->pc+= 2;
+			if (!GetPBit(c,ZFLAG)){
+				temp = c->instbuffer[1];
+				spos = c->pc + temp;
+				c->pc = spos;
+			}
+			return 1;
+			break;
+		case 0xF0://BEQ
+			c->pc+= 2;
+			if (GetPBit(c,CFLAG)){
+				temp = c->instbuffer[1];
+				spos = c->pc + temp;
+				c->pc = spos;
+			}
+			return 1;
+			break;
+		default:
+			return 0;
+			break;
+	}
+	return 0;
+}
+
+unsigned char RunInterruptBranches(struct cpu* c, unsigned char opcode){
+	unsigned char cpos = 0;//used for zero page addressing
+	unsigned short spos = 0;//used for relative addressing
+	signed char temp = 0; //used for temporary math
+	unsigned char utemp = 0;//used for unsigned temporary math
+	switch (opcode){
+		case 0x00://BRK
+			//this instructons probably shouldnt ever happen
+			c->pc++;
+			PushStack(c,(c->pc>>8)&0xFF);
+			PushStack(c,c->pc&0xFF);
+			PushStack(c,c->status);
+			spos = (ReadMemory(c,0xFFFF) << 8)+ReadMemory(c,0xFFFE);
+			c->pc = spos;
+			SetPBit(c,BFLAG,1);
+			return 1;
+			break;
+		case 0x20://JSR abs
+			spos = c->pc + 2;
+			PushStack(c,(spos>>8)&0xFF);
+			PushStack(c,spos&0xFF);
+			PushStack(c,c->status);
+			spos = (c->instbuffer[2]<<8) + c->instbuffer[1];
+			c->pc = spos;
+			c->depth++;
+			return 1;
+			break;
+		case 0x40://rti
+			//this also probably shouldnt happen
+			c->status = PopStack(c);
+			spos = PopStack(c);
+			spos += PopStack(c) << 8;
+			c->pc = spos;
+			return 1;
+			break;
+		case 0x60://RTS
+			if (c->depth){//we've run another subroutine from play/init
+				spos = PopStack(c);
+				spos += PopStack(c) << 8;
+				spos++;
+				c->pc = spos;
+				c->depth--;
+				return 1;
+			}
+			else{//if we are returning from play/init
+				c->playing = 0;
+				return 1;
+			}
+			break;
+		default:
+			return 0;
+			break;
+		
+	}
+}
+
+unsigned char RunSingleByteInstructions(struct cpu* c, unsigned char opcode){
+	unsigned char cpos = 0;//used for zero page addressing
+	unsigned short spos = 0;//used for relative addressing
+	signed char temp = 0; //used for temporary math
+	unsigned char utemp = 0;//used for unsigned temporary math
+	switch (opcode){
+		case 0x08://PHP
+			PushStack(c,c->status);
+			c->pc++;
+			return 1;
+			break;
+		case 0x28://PHP
+			c->status = PopStack(c);
+			c->pc++;
+			return 1;
+			break;
+		case 0x48://PHA
+			PushStack(c,c->acc);
+			c->pc++;
+			return 1;
+			break;
+		case 0x68://PLA
+			c->acc = PopStack(c);
+			c->pc++;
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			return 1;
+			break;
+		case 0x88://DEY
+			c->y--;
+			c->pc++;
+			SetPBit(c,NFLAG,c->y & 0x80);
+			SetPBit(c,ZFLAG, c->y == 0x00);
+			return 1;
+			break;
+		case 0xA8://TAY
+			c->y = c->acc;
+			c->pc++;
+			SetPBit(c,NFLAG,c->y & 0x80);
+			SetPBit(c,ZFLAG, c->y == 0x00);
+			return 1;
+			break;
+		case 0xC8://INY
+			c->y++;
+			c->pc++;
+			SetPBit(c,NFLAG,c->y & 0x80);
+			SetPBit(c,ZFLAG, c->y == 0x00);
+			return 1;
+			break;
+		case 0xE8://INX
+			c->x++;
+			c->pc++;
+			SetPBit(c,NFLAG,c->x & 0x80);
+			SetPBit(c,ZFLAG, c->x == 0x00);
+			return 1;
+			break;
+		case 0x18://CLC
+			c->pc++;
+			SetPBit(c,CFLAG,0);
+			return 1;
+			break;
+		case 0x38://SEC
+			c->pc++;
+			SetPBit(c,CFLAG,1);
+			return 1;
+			break;
+		case 0x58://CLI
+			c->pc++;
+			SetPBit(c,IFLAG,0);
+			return 1;
+			break;
+		case 0x78://SEI
+			c->pc++;
+			SetPBit(c,IFLAG,1);
+			return 1;
+			break;
+		case 0xA8://TYA
+			c->acc = c->y;
+			c->pc++;
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			return 1;
+			break;
+		case 0xB8://CLV
+			c->pc++;
+			SetPBit(c,VFLAG,0);
+			return 1;
+			break;
+		case 0xD8://CLD
+			c->pc++;
+			SetPBit(c,DFLAG,0);
+			return 1;
+			break;
+		case 0xF8://SED
+			c->pc++;
+			SetPBit(c,DFLAG,1);
+			return 1;
+			break;
+		case 0x8A://TXA
+			c->acc = c->x;
+			c->pc++;
+			SetPBit(c,NFLAG,c->acc & 0x80);
+			SetPBit(c,ZFLAG, c->acc == 0x00);
+			return 1;
+			break;
+		case 0x9A://TXS
+			c->s = c->x;
+			c->pc++;
+			return 1;
+			break;
+		case 0xAA://TAX
+			c->x = c->acc;
+			c->pc++;
+			SetPBit(c,NFLAG,c->x & 0x80);
+			SetPBit(c,ZFLAG, c->x == 0x00);
+			return 1;
+			break;
+		case 0xBA://TSX
+			c->x = c->s;
+			c->pc++;
+			SetPBit(c,NFLAG,c->x & 0x80);
+			SetPBit(c,ZFLAG, c->x == 0x00);
+			return 1;
+			break;
+		case 0xCA://DEX
+			c->x--;
+			c->pc++;
+			SetPBit(c,NFLAG,c->x & 0x80);
+			SetPBit(c,ZFLAG, c->x == 0x00);
+			return 1;
+			break;
+		case 0xEA://NOP
+			c->pc++;
+			return 1;
+			break;
+		case default:
+			return 0;
+			break;
+	}
+}
 void RunInstruction(struct cpu* c){
 	FetchInstruction(c);
 	unsigned char inst = c->instbuffer[0];//instructions are indexed in the form "aaabbbcc"
 	//according to http://nparker.llx.com/a2/opcodes.html
 	unsigned char amode = (inst >> 2) & 0b00000111;//addressing mode
 	unsigned char op = (inst >> 5) & 0b00000111;//op code
+	if (RunConditionalBranches(c,c->instbuffer[0]) || RunInterruptBranches(c,c->instbuffer[0])){
+		return;
+	}
 	if ((inst & 0x11) == 0x01){//cc == 01
 		RunSubset1Instructions(c,op,amode);
 	}
