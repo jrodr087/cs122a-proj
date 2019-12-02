@@ -1667,7 +1667,7 @@ unsigned char RunSingleByteInstructions(struct cpu* c, unsigned char opcode){
 			SetPBit(c,IFLAG,1);
 			return 1;
 			break;
-		case 0xA8://TYA
+		case 0x98://TYA
 			c->acc = c->y;
 			c->pc++;
 			SetPBit(c,NFLAG,c->acc & 0x80);
@@ -1726,7 +1726,7 @@ unsigned char RunSingleByteInstructions(struct cpu* c, unsigned char opcode){
 			c->pc++;
 			return 1;
 			break;
-		case default:
+		default:
 			return 0;
 			break;
 	}
@@ -1737,7 +1737,7 @@ void RunInstruction(struct cpu* c){
 	//according to http://nparker.llx.com/a2/opcodes.html
 	unsigned char amode = (inst >> 2) & 0b00000111;//addressing mode
 	unsigned char op = (inst >> 5) & 0b00000111;//op code
-	if (RunConditionalBranches(c,c->instbuffer[0]) || RunInterruptBranches(c,c->instbuffer[0])){
+	if (RunConditionalBranches(c,c->instbuffer[0]) || RunInterruptBranches(c,c->instbuffer[0]) || RunSingleByteInstructions(c,c->instbuffer[0])){
 		return;
 	}
 	if ((inst & 0x11) == 0x01){//cc == 01
