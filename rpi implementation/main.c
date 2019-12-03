@@ -24,7 +24,7 @@ int main(void)
 	InitCpu(&c);
 	c.playing = 1;
 	c.progcount = c.initadd;
-	c.acc = 2;//c.startingsong-1;
+	c.acc = c.startingsong-1;
 	c.x = 0;
 	c.y = 0x00;
 	clock_t start, end;

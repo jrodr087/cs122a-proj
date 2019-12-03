@@ -224,9 +224,9 @@ uint8_t ReadMemory(struct cpu *c, uint16_t pos){
 
 
 void WriteMemory(struct cpu *c, uint16_t pos, uint8_t val){//writes to certain memory addresses
-	if (pos == 0x07C7){
+	/*if (pos == 0x07C7){
 		printf("hey\n");
-	}
+	}*/
 	if (pos <= mirrorhead){//write to wam
 		pos = pos % ramsize;
 		c->RAM[pos] = val;
@@ -241,25 +241,15 @@ void WriteMemory(struct cpu *c, uint16_t pos, uint8_t val){//writes to certain m
 	
 }
 void FetchInstruction(struct cpu* c){
-	/*if (c->progcount >= c->initadd && c->progcount < c->initadd+FUNCTIONBUFFSIZE-3){
-		c->instbuffer[0] = c->initbuff[c->progcount-c->initadd];
-		c->instbuffer[1] = c->initbuff[c->progcount-c->initadd+1];
-		c->instbuffer[2] = c->initbuff[c->progcount-c->initadd+2];
-		return;
-	}
-	if (c->progcount >= c->playadd && c->progcount < c->playadd+FUNCTIONBUFFSIZE-3){
-		c->instbuffer[0] = c->initbuff[c->progcount-c->playadd];
-		c->instbuffer[1] = c->initbuff[c->progcount-c->playadd+1];
-		c->instbuffer[2] = c->initbuff[c->progcount-c->playadd+2];
-		return;
-	}*/
-	//SPI_Transmit(0xFF);//transmit dummy data so we know we arent ahead of the rpi
-		printf("fetch at address: %d",c->progcount);
-		printf("\n");
+		//printf("fetch at address: %d",c->progcount);
+		//printf("\n");
+		if (c->progcount == 63188){
+			printf("hey\n");
+		}
 	for (unsigned int i = 0; i < 3; i++){
 		c->instbuffer[i] = c->cart[c->progcount+i];
-		printf("data: %d",c->cart[c->progcount+i]);
-		printf("\n");
+		//printf("data: %d",c->cart[c->progcount+i]);
+		//printf("\n");
 	}
 }
 void ADCFunction(struct cpu* c, uint8_t inc){
@@ -1393,7 +1383,7 @@ void RunSubset3Instructions(struct cpu* c, uint8_t op, uint8_t amode){
 					break;
 				case 0x03://absolute
 					spos = (c->instbuffer[2] << 8) + c->instbuffer[1];
-					c->x = ReadMemory(c,spos);
+					c->y = ReadMemory(c,spos);
 					SetPBit(c,NFLAG,c->x & 0x80);
 					SetPBit(c,ZFLAG, c->x == 0x00);
 					c->progcount += 3;
@@ -1600,7 +1590,7 @@ uint8_t RunConditionalBranches(struct cpu* c, uint8_t opcode){
 			break;
 		case 0xF0://BEQ
 			c->progcount+= 2;
-			if (GetPBit(c,CFLAG)){
+			if (GetPBit(c,ZFLAG)){
 				temp = c->instbuffer[1];
 				spos = c->progcount + temp;
 				c->progcount = spos;
