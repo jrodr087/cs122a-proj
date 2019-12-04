@@ -195,6 +195,13 @@ void InitCpu(struct cpu* c){
 	c->instbuffer[0]=0;
 	c->instbuffer[1]=0;
 	c->instbuffer[2]=0;
+	for (uint16_t i = 0; i < 0x07FF; i++){
+		c->RAM[i] = 0;
+	}
+	for (uint16_t i = 0x6000; i < 0x7FFF; i++){
+		c->cart[i] = 0;
+	}
+	
 	PopulateBuffers(c);
 	/*c->initadd = SPI_ServantReceive();
 	c->initadd += SPI_ServantReceive() << 8;
@@ -217,39 +224,43 @@ uint8_t ReadMemory(struct cpu *c, uint16_t pos){
 	else if (pos >= c->initadd && pos < c->initadd+256){
 		return c->initbuff[pos-c->initadd];
 	}
-	else{
+	else if (pos == 0x4015){
+		return c->a.ce;
+	}
+	else if (pos >= 0x6000 && pos <= 0xFFF9){
 		return c->cart[pos];
 	}
 }
 
 
 void WriteMemory(struct cpu *c, uint16_t pos, uint8_t val){//writes to certain memory addresses
-	/*if (pos == 0x07C7){
-		printf("hey\n");
-	}*/
+	if (pos == 0x07C7){
+		printf("val: %02x", val);
+		printf("\n");
+	}
 	if (pos <= mirrorhead){//write to wam
 		pos = pos % ramsize;
 		c->RAM[pos] = val;
 		return;
 	}
-	if (pos >= 0x4000 && pos <= 0x4017){//apu write
+	if ((pos >= 0x4000 && pos <= 0x4013 ) || pos == 0x4015){//apu write
 		APUWrite(&(c->a),val,pos & 0xFF);
 	}
-	else{
+	else if (pos >= 0x6000 && pos <= 0x7FFF){
 		 c->cart[pos] = val;
 	}
 	
 }
 void FetchInstruction(struct cpu* c){
-		//printf("fetch at address: %d",c->progcount);
-		//printf("\n");
-		if (c->progcount == 63188){
+	//	printf("fetch at address: %d",c->progcount);
+	//	printf("\n");
+	/*	if (c->progcount == 63188){
 			printf("hey\n");
-		}
+		}*/
 	for (unsigned int i = 0; i < 3; i++){
 		c->instbuffer[i] = c->cart[c->progcount+i];
-		//printf("data: %d",c->cart[c->progcount+i]);
-		//printf("\n");
+	//	printf("data: %02X",c->cart[c->progcount+i]);
+	//	printf("\n");
 	}
 }
 void ADCFunction(struct cpu* c, uint8_t inc){
