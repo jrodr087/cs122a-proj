@@ -15,8 +15,9 @@
  #include "cpu.h"
 #define AMPDIV 2
 #define SAMPLESPERFRAMECOUNTER 34
-#define SECONDSPERPLAYCALL .01666
+#define SECONDSPERPLAYCALL .01664
 #define SECONDSPERSAMPLE .0000625
+#define SECONDSPERFRAMECOUNTER .004166
 static volatile int keepRunning = 1;
 void intHandler(int dummy){
 	keepRunning = 0;
@@ -31,14 +32,14 @@ int InitSPI(){
 	signal(SIGINT,intHandler);
 	bcm2835_spi_setBitOrder(BCM2835_SPI_BIT_ORDER_MSBFIRST);
 	bcm2835_spi_setDataMode(BCM2835_SPI_MODE0);
-	bcm2835_spi_setClockDivider(BCM2835_SPI_CLOCK_DIVIDER_1024);
+	bcm2835_spi_setClockDivider(BCM2835_SPI_CLOCK_DIVIDER_512);
 	bcm2835_spi_chipSelect(BCM2835_SPI_CS0);
 	bcm2835_spi_setChipSelectPolarity(BCM2835_SPI_CS0,LOW);
-	bcm2835_gpio_fsel(18,BCM2835_GPIO_FSEL_ALT5 ); //PWM0 signal on GPIO18    
+	/*bcm2835_gpio_fsel(18,BCM2835_GPIO_FSEL_ALT5 ); //PWM0 signal on GPIO18    
     bcm2835_gpio_fsel(13,BCM2835_GPIO_FSEL_ALT0 ); //PWM1 signal on GPIO13  
 	bcm2835_pwm_set_clock(2);
 	bcm2835_pwm_set_mode(0, 1, 1); //channel 0, markspace mode, PWM enabled.
-    bcm2835_pwm_set_mode(1, 1, 1); //channel 1, markspace mode, PWM enabled. 
+    bcm2835_pwm_set_mode(1, 1, 1);*/ //channel 1, markspace mode, PWM enabled. 
 	return 0;
 }
 
@@ -52,11 +53,11 @@ int main(void)
 	InitCpu(&c);
 	c.playing = 1;
 	c.progcount = c.initadd;
-	c.acc = 2;
+	c.acc = 0;
 	c.x = 0;
 	c.y = 0x00;
 	//clock_t start, end, startSample, endSample;
-	struct timeval start,end, total, startsample,endsample,totalsample;
+	struct timeval start,end, total, startsample,endsample,totalsample, startfc,endfc,totalfc;
 	double cpu_time_used;
 	//start = clock();
 	gettimeofday(&start,NULL);
@@ -85,42 +86,57 @@ int main(void)
 	cpu_time_used = 0;
 	float sampletime = 0.0;
 	double globalSampleTime = 0.0;
+	double frameCounterTime = 0.0;
 	gettimeofday(&startsample,NULL);
     while (keepRunning)  
     {
-		gettimeofday(&start,NULL);
-		if (c.playing){
-			TickCpu(&c);
-		}
 		gettimeofday(&end,NULL);
 		timersub(&end,&start,&total);
-		//end = clock();
+		gettimeofday(&start,NULL);
 		cpu_time_used += total.tv_sec + (total.tv_usec*.000001f);
 		if (cpu_time_used > SECONDSPERPLAYCALL){
 			if (!c.playing){
-				printf("finished a playcall at %f seconds\n", cpu_time_used);
+			//	printf("finished a playcall at %f seconds\n", cpu_time_used);
 				c.playing = 1;
 				c.progcount = c.playadd;
 				cpu_time_used = 0.0;
 			}
 		}
+		if (c.playing){
+			TickCpu(&c);
+		}
+		
+		
 		gettimeofday(&endsample,NULL);
 		timersub(&endsample,&startsample,&totalsample);
-		sampletime += total.tv_sec + (total.tv_usec*.000001f);
+		sampletime += totalsample.tv_sec + (totalsample.tv_usec*.000001f);
+		gettimeofday(&startsample,NULL);
 		if (sampletime >= SECONDSPERSAMPLE){
 			globalSampleTime += sampletime;
 			float samplerec = SampleAPUSquare1(&(c.a), globalSampleTime);
+			samplerec+= .5;
+			SampleAPUSquare2(&(c.a),globalSampleTime);
+			SampleAPUTriangle(&(c.a),globalSampleTime);
 			if (samplerec > 1.0){samplerec = 1.0;}
-			if (samplerec < -1.0){samplerec = -1.0;}
-			int8_t sample8bit = samplerec *128;
+			if (samplerec < 0.0){samplerec = 0.0;}
+			int8_t sample8bit = samplerec *127;
 			sample8bit += 128;
 			//printf("sample taken: %d \n", sample8bit);
-			//bcm2835_spi_transfer(sample8bit);
+			bcm2835_spi_transfer(sample8bit);
 			//bcm2835_pwm_set_data(0,sample12bit>>6 & 0xFF);
 			//bcm2835_pwm_set_data(1,sample12bit & 0xFF);
 			sampletime = 0.0;
 		}
-		gettimeofday(&startsample,NULL);
+		
+		
+		gettimeofday(&endfc,NULL);
+		timersub(&endfc,&startfc,&totalfc);
+		frameCounterTime += totalfc.tv_sec + (totalfc.tv_usec*.000001f);
+		gettimeofday(&startfc,NULL);
+		if (frameCounterTime >= SECONDSPERFRAMECOUNTER){
+			APUFrameStep(&(c.a));
+			frameCounterTime = 0.0;
+		}
     }
 	bcm2835_spi_end();
 	bcm2835_close();

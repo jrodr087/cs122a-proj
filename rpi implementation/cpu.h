@@ -778,7 +778,9 @@ void RunSubset2Instructions(struct cpu* c, uint8_t op, uint8_t amode){
 					break;
 				case 2://accumulator
 					SetPBit(c,CFLAG,c->acc&0x80);
-					c->acc = c->acc<<1;
+					utemp = c->acc;
+					utemp = utemp << 1;
+					c->acc = utemp;
 					SetPBit(c,ZFLAG,!c->acc);
 					SetPBit(c,NFLAG,c->acc&0x80);
 					c->progcount+= 1;
@@ -839,10 +841,11 @@ void RunSubset2Instructions(struct cpu* c, uint8_t op, uint8_t amode){
 					c->progcount+= 2;
 					break;
 				case 2://accumulator
-					utemp = GetPBit(c,CFLAG);
+					utemp = c->acc;
+					utemp = utemp <<1;
+					utemp |= GetPBit(c,CFLAG);
 					SetPBit(c,CFLAG,c->acc&0x80);
-					c->acc = c->acc<<1;
-					c->acc |= utemp;
+					c->acc = utemp;
 					SetPBit(c,ZFLAG,!c->acc);
 					SetPBit(c,NFLAG,c->acc&0x80);
 					c->progcount+= 1;
@@ -966,17 +969,19 @@ void RunSubset2Instructions(struct cpu* c, uint8_t op, uint8_t amode){
 					utemp = utemp>>1;
 					utemp |= cpos << 7;
 					SetPBit(c,ZFLAG,!utemp);
-					SetPBit(c,NFLAG,0);
+					SetPBit(c,NFLAG,utemp&0x80);
 					c->RAM[c->instbuffer[1]] = utemp;
 					c->progcount+= 2;
 					break;
 				case 2://accumulator
 					SetPBit(c,CFLAG,c->acc&0x01);
 					cpos = GetPBit(c,CFLAG);
-					c->acc = c->acc>>1;
-					c->acc |= cpos << 7;
+					utemp = c->acc;
+					utemp = utemp >>1;
+					utemp |= cpos << 7;
+					c->acc = utemp;
 					SetPBit(c,ZFLAG,!c->acc);
-					SetPBit(c,NFLAG,0);
+					SetPBit(c,NFLAG,c->acc&0x80);
 					c->progcount+= 1;
 					break;
 				case 3://absolute
@@ -987,7 +992,7 @@ void RunSubset2Instructions(struct cpu* c, uint8_t op, uint8_t amode){
 					utemp = utemp>>1;
 					utemp |= cpos << 7;
 					SetPBit(c,ZFLAG,!utemp);
-					SetPBit(c,NFLAG,0);
+					SetPBit(c,NFLAG,utemp&0x80);
 					WriteMemory(c,spos,utemp);
 					c->progcount+= 3;
 					break;
@@ -1002,7 +1007,7 @@ void RunSubset2Instructions(struct cpu* c, uint8_t op, uint8_t amode){
 					utemp = utemp>>1;
 					utemp |= (spos << 7) & 0xFF;
 					SetPBit(c,ZFLAG,!utemp);
-					SetPBit(c,NFLAG,0);
+					SetPBit(c,NFLAG,utemp&0x80);
 					c->RAM[cpos] = utemp;
 					c->progcount+= 2;
 					break;
@@ -1017,7 +1022,7 @@ void RunSubset2Instructions(struct cpu* c, uint8_t op, uint8_t amode){
 					utemp = utemp>>1;
 					utemp |= cpos << 7;
 					SetPBit(c,ZFLAG,!utemp);
-					SetPBit(c,NFLAG,0);
+					SetPBit(c,NFLAG,utemp&0x80);
 					WriteMemory(c,spos,utemp);
 					c->progcount+= 3;
 					break;
